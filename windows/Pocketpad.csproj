@@ -9,6 +9,8 @@
     <AssemblyName>Pocketpad</AssemblyName>
     <RootNamespace>Pocketpad</RootNamespace>
     <ApplicationHighDpiMode>SystemAware</ApplicationHighDpiMode>
+    <ApplicationIcon>pocketpad.ico</ApplicationIcon>
+    <Version>0.2.0</Version>
   </PropertyGroup>
 
   <ItemGroup>

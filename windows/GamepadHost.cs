@@ -18,6 +18,7 @@ namespace Pocketpad;
 /// Buttons bits: 0 A, 1 B, 2 X, 3 Y, 4 LB, 5 RB, 6 Back, 7 Start,
 ///               8 L3, 9 R3, 10 Up, 11 Down, 12 Left, 13 Right, 14 Guide
 /// Discovery: phone broadcasts "PPAD?", we answer "PPAD!" + computer name.
+/// Ping: phone sends "PPNG" + 8 bytes, we echo the packet back unchanged.
 /// </summary>
 sealed class GamepadHost : IDisposable
 {
@@ -101,6 +102,11 @@ sealed class GamepadHost : IDisposable
             {
                 LastPacketTick = Environment.TickCount64;
                 Apply(data);
+            }
+            else if (data.Length >= 4 && Encoding.ASCII.GetString(data, 0, 4) == "PPNG")
+            {
+                // Latency check from the phone: bounce it straight back.
+                try { udp.Send(data, data.Length, ep); } catch { /* ignore */ }
             }
             else if (data.Length >= 5 && Encoding.ASCII.GetString(data, 0, 5) == "PPAD?")
             {

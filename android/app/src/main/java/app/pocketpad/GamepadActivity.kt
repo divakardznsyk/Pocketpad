@@ -4,7 +4,6 @@ import android.app.Activity
 import android.content.Context
 import android.net.wifi.WifiManager
 import android.os.Bundle
-import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
@@ -12,13 +11,20 @@ import java.net.InetAddress
 
 class GamepadActivity : Activity() {
     private val state = PadState()
+    private lateinit var view: GamepadView
     private var sender: PadSender? = null
     private var wifiLock: WifiManager.WifiLock? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        setContentView(GamepadView(this, state))
+        // Use the whole screen, including the area around the camera hole.
+        window.attributes = window.attributes.also {
+            it.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        }
+        view = GamepadView(this, state)
+        view.onClose = { finish() }
+        setContentView(view)
         hideBars()
     }
 
@@ -36,18 +42,22 @@ class GamepadActivity : Activity() {
         } catch (_: Exception) {
         }
 
-        val ip = intent.getStringExtra("ip")
-        if (ip != null) {
-            Thread {
-                try {
-                    val addr = InetAddress.getByName(ip)
-                    val s = PadSender(state, addr)
-                    sender = s
-                    s.start()
-                } catch (_: Exception) {
+        val ip = intent.getStringExtra("ip") ?: return
+        view.pingMs = -2
+        Thread {
+            try {
+                val s = PadSender(state, InetAddress.getByName(ip))
+                s.onPing = { ms ->
+                    view.pingMs = ms
+                    view.postInvalidate()
                 }
-            }.start()
-        }
+                sender = s
+                s.start()
+            } catch (_: Exception) {
+                view.pingMs = -1
+                view.postInvalidate()
+            }
+        }.start()
     }
 
     override fun onPause() {

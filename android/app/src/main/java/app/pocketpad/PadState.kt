@@ -41,6 +41,12 @@ class PadSender(private val state: PadState, private val host: InetAddress) : Th
     @Volatile
     var running = true
 
+    /** Called about once a second with the round-trip time in ms, or -1 when the laptop stopped answering. */
+    var onPing: ((Int) -> Unit)? = null
+
+    @Volatile
+    private var lastPong = 0L
+
     override fun run() {
         val socket = try {
             DatagramSocket().also { it.trafficClass = 0x10 } // low-delay hint
@@ -52,6 +58,36 @@ class PadSender(private val state: PadState, private val host: InetAddress) : Th
         val bb = ByteBuffer.wrap(cur).order(ByteOrder.LITTLE_ENDIAN)
         val packet = DatagramPacket(cur, cur.size, host, Net.PAD_PORT)
         var lastSend = 0L
+
+        // Ping: "PPNG" + sender's nanoTime; the laptop echoes it back unchanged.
+        val ping = ByteArray(12)
+        val pingBuf = ByteBuffer.wrap(ping)
+        pingBuf.put("PPNG".toByteArray())
+        val pingPacket = DatagramPacket(ping, ping.size, host, Net.PAD_PORT)
+        var lastPing = 0L
+        val started = System.nanoTime()
+        lastPong = started
+
+        socket.soTimeout = 500
+        val listener = Thread {
+            val b = ByteArray(32)
+            val p = DatagramPacket(b, b.size)
+            while (running) {
+                try {
+                    socket.receive(p)
+                    if (p.length >= 12 && String(b, 0, 4) == "PPNG") {
+                        val sent = ByteBuffer.wrap(b, 4, 8).long
+                        lastPong = System.nanoTime()
+                        onPing?.invoke(((lastPong - sent) / 1_000_000L).toInt())
+                    }
+                } catch (_: java.net.SocketTimeoutException) {
+                } catch (_: IOException) {
+                    if (!running) break
+                }
+            }
+        }
+        listener.isDaemon = true
+        listener.start()
 
         while (running) {
             bb.put(0, 1)
@@ -73,6 +109,12 @@ class PadSender(private val state: PadState, private val host: InetAddress) : Th
                 }
                 System.arraycopy(cur, 0, prev, 0, cur.size)
                 lastSend = now
+            }
+            if (now - lastPing > 1_000_000_000L) {
+                pingBuf.putLong(4, now)
+                try { socket.send(pingPacket) } catch (_: IOException) {}
+                lastPing = now
+                if (now - lastPong > 3_000_000_000L) onPing?.invoke(-1)
             }
             try {
                 sleep(2)

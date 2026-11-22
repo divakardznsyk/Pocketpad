@@ -3,8 +3,12 @@ package app.pocketpad
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.Drawable
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
@@ -14,7 +18,6 @@ import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -29,10 +32,20 @@ import kotlin.concurrent.thread
 
 class MainActivity : Activity() {
     private lateinit var ipField: EditText
-    private lateinit var status: TextView
+    private lateinit var pillText: TextView
+    private lateinit var pillDot: View
+    private lateinit var hint: TextView
     private lateinit var shareStatus: TextView
     private var receiver: FileReceiver? = null
     private val ui = Handler(Looper.getMainLooper())
+
+    private val cBg = Color.rgb(10, 10, 12)
+    private val cCard = Color.rgb(20, 20, 23)
+    private val cLine = Color.rgb(38, 38, 44)
+    private val cText = Color.rgb(242, 242, 244)
+    private val cSub = Color.rgb(139, 139, 149)
+    private val cAccent = Color.rgb(53, 224, 161)
+    private val cBad = Color.rgb(255, 107, 99)
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
@@ -53,7 +66,7 @@ class MainActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
-        receiver = FileReceiver(this) { msg -> runOnUiThread { shareStatus.text = msg } }.also { it.start() }
+        receiver = FileReceiver(this) { msg -> runOnUiThread { setShare(msg, true) } }.also { it.start() }
     }
 
     override fun onStop() {
@@ -62,71 +75,155 @@ class MainActivity : Activity() {
         receiver = null
     }
 
-    // ---------- UI ----------
+    // ---------- UI building blocks ----------
 
-    private fun label(text: String, size: Float, color: Int = Color.WHITE, bold: Boolean = false): TextView =
+    private fun shape(color: Int, radius: Int, stroke: Int = 0): GradientDrawable =
+        GradientDrawable().apply {
+            setColor(color)
+            cornerRadius = dp(radius).toFloat()
+            if (stroke != 0) setStroke(dp(1), stroke)
+        }
+
+    private fun ripple(content: Drawable, radius: Int): Drawable =
+        RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), content, shape(Color.WHITE, radius))
+
+    private fun text(
+        s: String, sp: Float, color: Int = cText, medium: Boolean = false,
+    ): TextView = TextView(this).apply {
+        text = s
+        textSize = sp
+        setTextColor(color)
+        typeface = Typeface.create(if (medium) "sans-serif-medium" else "sans-serif", Typeface.NORMAL)
+    }
+
+    private fun button(label: String, primary: Boolean, onClick: () -> Unit): TextView =
         TextView(this).apply {
-            this.text = text
-            textSize = size
-            setTextColor(color)
-            if (bold) typeface = Typeface.DEFAULT_BOLD
-            setPadding(0, dp(6), 0, dp(6))
+            text = label
+            textSize = 16f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            gravity = Gravity.CENTER
+            setTextColor(if (primary) Color.rgb(8, 24, 18) else cText)
+            val base = if (primary) shape(cAccent, 16) else shape(Color.rgb(30, 30, 35), 16, cLine)
+            background = ripple(base, 16)
+            isClickable = true
+            setOnClickListener { onClick() }
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54))
+                .apply { topMargin = dp(16) }
         }
 
-    private fun button(text: String, primary: Boolean, onClick: () -> Unit): Button =
-        Button(this).apply {
-            this.text = text
-            isAllCaps = false
-            setTextColor(if (primary) Color.BLACK else Color.WHITE)
-            setBackgroundColor(if (primary) Color.rgb(245, 197, 66) else Color.rgb(40, 40, 46))
-            setOnClickListener { onClick() }
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(56)
-            ).apply { topMargin = dp(8) }
+    private fun card(vararg views: View): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = shape(cCard, 24, cLine)
+            setPadding(dp(20), dp(20), dp(20), dp(20))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                .apply { topMargin = dp(14) }
+            views.forEach { addView(it) }
         }
+
+    private fun setPill(color: Int, label: String) {
+        pillDot.background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(color) }
+        pillText.text = label
+    }
+
+    private fun setShare(msg: String, ok: Boolean) {
+        shareStatus.setTextColor(if (ok) cAccent else cBad)
+        shareStatus.text = msg
+        shareStatus.visibility = if (msg.isEmpty()) View.GONE else View.VISIBLE
+    }
 
     private fun buildUi() {
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(28), dp(20), dp(28))
+            setPadding(dp(20), dp(24), dp(20), dp(32))
         }
-        val grey = Color.rgb(160, 160, 168)
 
-        col.addView(label("Pocketpad", 30f, bold = true))
-
-        status = label("Looking for your laptop…", 15f, grey)
-        col.addView(status)
-
-        ipField = EditText(this).apply {
-            hint = "Laptop address, e.g. 192.168.1.5"
-            setHintTextColor(Color.rgb(100, 100, 108))
-            setTextColor(Color.WHITE)
-            inputType = InputType.TYPE_CLASS_PHONE
-            setSingleLine(true)
+        // Header: title + connection pill
+        pillDot = View(this).apply { layoutParams = LinearLayout.LayoutParams(dp(8), dp(8)).apply { marginEnd = dp(8) } }
+        pillText = text("", 13f, cText, true)
+        val pill = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = ripple(shape(cCard, 20, cLine), 20)
+            setPadding(dp(14), dp(9), dp(16), dp(9))
+            isClickable = true
+            setOnClickListener { discover() }
+            addView(pillDot)
+            addView(pillText)
         }
-        col.addView(ipField)
-        col.addView(button("Find laptop", false) { discover() })
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(text("Pocketpad", 26f, cText, true).apply {
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            })
+            addView(pill)
+        }
+        col.addView(header)
+        setPill(cSub, "Searching…")
 
-        col.addView(label("Controller", 20f, bold = true).apply { setPadding(0, dp(28), 0, dp(4)) })
-        col.addView(label("Turns this phone into an Xbox controller for your laptop.", 14f, grey))
-        col.addView(button("Open controller", true) { openController() })
-
-        col.addView(label("Share files", 20f, bold = true).apply { setPadding(0, dp(28), 0, dp(4)) })
+        // Controller
         col.addView(
-            label(
-                "Send files to the laptop, or tap \"Send file to phone\" in the laptop app. Keep this screen open while receiving.",
-                14f, grey
+            card(
+                text("Controller", 20f, cText, true),
+                text("Play PC games with this phone. It shows up as an Xbox controller.", 14f, cSub)
+                    .apply { setPadding(0, dp(6), 0, 0) },
+                button("Start playing", true) { openController() },
             )
         )
-        col.addView(button("Send files to laptop", false) { pickFiles() })
-        shareStatus = label("", 14f, Color.rgb(110, 220, 140))
-        col.addView(shareStatus)
+
+        // Files
+        shareStatus = text("", 14f, cAccent).apply {
+            visibility = View.GONE
+            setPadding(0, dp(14), 0, 0)
+        }
+        col.addView(
+            card(
+                text("Files", 20f, cText, true),
+                text("Send anything to the laptop, or use Send in the laptop app. Keep this screen open to receive.", 14f, cSub)
+                    .apply { setPadding(0, dp(6), 0, 0) },
+                button("Send to laptop", false) { pickFiles() },
+                shareStatus,
+            )
+        )
+
+        // Connection
+        ipField = EditText(this).apply {
+            hint = "192.168.1.5"
+            setHintTextColor(Color.rgb(90, 90, 98))
+            setTextColor(cText)
+            textSize = 16f
+            inputType = InputType.TYPE_CLASS_PHONE
+            setSingleLine(true)
+            background = shape(Color.rgb(13, 13, 15), 14, cLine)
+            setPadding(dp(16), 0, dp(16), 0)
+            layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f)
+        }
+        val find = text("Find", 15f, cText, true).apply {
+            gravity = Gravity.CENTER
+            background = ripple(shape(Color.rgb(30, 30, 35), 14, cLine), 14)
+            isClickable = true
+            setOnClickListener { discover() }
+            layoutParams = LinearLayout.LayoutParams(dp(72), dp(48)).apply { marginStart = dp(10) }
+        }
+        hint = text("", 13f, cSub).apply { setPadding(0, dp(12), 0, 0) }
+        col.addView(
+            card(
+                text("Laptop address", 14f, cSub, true).apply { setPadding(0, 0, 0, dp(10)) },
+                LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    addView(ipField)
+                    addView(find)
+                },
+                hint,
+            )
+        )
 
         setContentView(ScrollView(this).apply {
-            setBackgroundColor(Color.rgb(14, 14, 16))
+            setBackgroundColor(cBg)
             isFillViewport = true
-            addView(col)
             fitsSystemWindows = true
+            addView(col)
         })
     }
 
@@ -139,8 +236,8 @@ class MainActivity : Activity() {
     }
 
     private fun discover() {
-        status.setTextColor(Color.rgb(160, 160, 168))
-        status.text = "Looking for your laptop…"
+        setPill(cSub, "Searching…")
+        hint.text = ""
         val saved = currentIp()
         thread {
             val found = Net.discover(saved)
@@ -148,12 +245,12 @@ class MainActivity : Activity() {
                 if (found != null) {
                     ipField.setText(found.first)
                     saveIp(found.first)
-                    status.setTextColor(Color.rgb(110, 220, 140))
-                    status.text = "Found ${found.second}  •  ${found.first}"
+                    setPill(cAccent, found.second)
+                    hint.text = "Connected to ${found.second}."
                 } else {
-                    status.setTextColor(Color.rgb(255, 130, 120))
-                    status.text = "Laptop not found. Open Pocketpad on the laptop, make sure both are on the same Wi-Fi " +
-                        "(or phone hotspot), or type the address shown in the laptop app."
+                    setPill(cBad, "Not connected")
+                    hint.text = "Open Pocketpad on the laptop and join the same Wi-Fi, or turn on this phone's hotspot " +
+                        "and connect the laptop to it. You can also type the address shown in the laptop app."
                 }
             }
         }
@@ -162,7 +259,7 @@ class MainActivity : Activity() {
     private fun openController() {
         val ip = currentIp()
         if (ip.isEmpty()) {
-            status.text = "Enter or find the laptop address first."
+            hint.text = "Enter the laptop address first, or tap Find."
             return
         }
         saveIp(ip)
@@ -209,12 +306,10 @@ class MainActivity : Activity() {
     private fun sendAll(uris: List<Uri>) {
         val ip = currentIp()
         if (ip.isEmpty()) {
-            shareStatus.setTextColor(Color.rgb(255, 130, 120))
-            shareStatus.text = "Find the laptop first (address is empty)."
+            setShare("Find the laptop first.", false)
             return
         }
-        shareStatus.setTextColor(Color.rgb(110, 220, 140))
-        shareStatus.text = "Sending ${uris.size} file(s)…"
+        setShare("Sending ${uris.size} file(s)…", true)
         thread {
             var sent = 0
             for (u in uris) {
@@ -222,17 +317,11 @@ class MainActivity : Activity() {
                     sendUri(ip, u)
                     sent++
                 } catch (e: Exception) {
-                    runOnUiThread {
-                        shareStatus.setTextColor(Color.rgb(255, 130, 120))
-                        shareStatus.text = "Send failed: ${e.message}"
-                    }
+                    runOnUiThread { setShare("Send failed: ${e.message}", false) }
                     return@thread
                 }
             }
-            runOnUiThread {
-                shareStatus.setTextColor(Color.rgb(110, 220, 140))
-                shareStatus.text = "Sent $sent file(s) to the laptop (Downloads/Pocketpad)"
-            }
+            runOnUiThread { setShare("Sent $sent file(s). They're in Downloads\\Pocketpad on the laptop.", true) }
         }
     }
 
