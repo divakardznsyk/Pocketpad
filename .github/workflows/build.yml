@@ -22,7 +22,12 @@ jobs:
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon
+          set -o pipefail
+          ./gradlew assembleRelease --no-daemon 2>&1 | tee ../gradle.log
+      - name: Show compiler errors
+        if: failure()
+        run: |
+          grep -E '^e: |error:|What went wrong' -A3 gradle.log | head -60 | while IFS= read -r l; do echo "::error::$l"; done
       - name: Rename APK
         run: cp android/app/build/outputs/apk/release/app-release.apk Pocketpad.apk
       - uses: actions/upload-artifact@v4
@@ -57,7 +62,7 @@ jobs:
         shell: pwsh
         run: |
           choco install innosetup -y --no-progress
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer\pocketpad.iss
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer\pocketpad.iss 2>&1 | ForEach-Object { if ($_ -match 'Error') { Write-Host "::error::$_" }; $_ }
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
       - uses: actions/upload-artifact@v4
         with:

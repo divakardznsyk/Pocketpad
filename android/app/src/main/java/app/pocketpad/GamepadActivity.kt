@@ -12,37 +12,60 @@ import java.net.InetAddress
 class GamepadActivity : Activity() {
     private val state = PadState()
     private lateinit var view: GamepadView
+    private lateinit var presets: MutableList<Preset>
+    private var sel = 0
     private var sender: PadSender? = null
     private var wifiLock: WifiManager.WifiLock? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        val prefs = getSharedPreferences("pocketpad", Context.MODE_PRIVATE)
+
         // Use the whole screen, including the area around the camera hole.
         window.attributes = window.attributes.also {
             it.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            // Battery: a dimmed OLED screen is the biggest saver while playing.
+            if (prefs.getBoolean("dim", true)) it.screenBrightness = 0.2f
         }
-        view = GamepadView(this, state)
-        view.onClose = { finish() }
+
+        presets = PresetStore.load(this)
+        sel = PresetStore.selected(this, presets.size)
+        view = GamepadView(this, state, presets[sel])
+        view.onSave = { PresetStore.save(this, presets, sel) }
+        view.onClose = {
+            PresetStore.save(this, presets, sel)
+            finish()
+        }
         setContentView(view)
         hideBars()
+
+        if (intent.getBooleanExtra("edit", false)) {
+            view.exitOnDone = true
+            view.startEditing()
+        }
     }
 
     override fun onResume() {
         super.onResume()
         hideBars()
 
-        // Ask Wi-Fi for its lowest-latency mode while we're on screen.
-        try {
-            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "pocketpad").also {
-                it.setReferenceCounted(false)
-                it.acquire()
+        val prefs = getSharedPreferences("pocketpad", Context.MODE_PRIVATE)
+        val ip = intent.getStringExtra("ip")
+        if (ip == null || intent.getBooleanExtra("edit", false)) return
+
+        // Ask Wi-Fi for its lowest-latency mode while we're on screen (costs a little battery, so it's optional).
+        if (prefs.getBoolean("ll", true)) {
+            try {
+                val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+                wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "pocketpad").also {
+                    it.setReferenceCounted(false)
+                    it.acquire()
+                }
+            } catch (_: Exception) {
             }
-        } catch (_: Exception) {
         }
 
-        val ip = intent.getStringExtra("ip") ?: return
         view.pingMs = -2
         Thread {
             try {
@@ -62,7 +85,8 @@ class GamepadActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
-        sender?.running = false
+        PresetStore.save(this, presets, sel)
+        sender?.finish()
         sender = null
         try { wifiLock?.release() } catch (_: Exception) {}
         wifiLock = null

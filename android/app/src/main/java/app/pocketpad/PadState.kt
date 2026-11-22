@@ -4,8 +4,10 @@ import java.io.IOException
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.SocketTimeoutException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.locks.LockSupport
 
 /** Button bits, must match windows/GamepadHost.cs */
 object Bit {
@@ -34,14 +36,26 @@ class PadState {
     @Volatile var ly = 0
     @Volatile var rx = 0
     @Volatile var ry = 0
+
+    /** Wakes the sender; set by [PadSender]. */
+    @Volatile var listener: Runnable? = null
+
+    /** Call after changing any value above. */
+    fun changed() {
+        listener?.run()
+    }
 }
 
-/** Streams the state to the laptop over UDP: immediately on change, and every 50 ms as a heartbeat. */
+/**
+ * Streams the state to the laptop over UDP.
+ * It sleeps until something changes (sending at once) and otherwise only sends a small heartbeat
+ * every 100 ms, so an idle controller barely wakes the CPU or the radio.
+ */
 class PadSender(private val state: PadState, private val host: InetAddress) : Thread("pocketpad-sender") {
     @Volatile
     var running = true
 
-    /** Called about once a second with the round-trip time in ms, or -1 when the laptop stopped answering. */
+    /** Called about every 2 seconds with the round-trip time in ms, or -1 when the laptop stopped answering. */
     var onPing: ((Int) -> Unit)? = null
 
     @Volatile
@@ -53,6 +67,8 @@ class PadSender(private val state: PadState, private val host: InetAddress) : Th
         } catch (_: Exception) {
             return
         }
+        state.listener = Runnable { LockSupport.unpark(this) }
+
         val cur = ByteArray(14)
         val prev = ByteArray(14)
         val bb = ByteBuffer.wrap(cur).order(ByteOrder.LITTLE_ENDIAN)
@@ -65,8 +81,7 @@ class PadSender(private val state: PadState, private val host: InetAddress) : Th
         pingBuf.put("PPNG".toByteArray())
         val pingPacket = DatagramPacket(ping, ping.size, host, Net.PAD_PORT)
         var lastPing = 0L
-        val started = System.nanoTime()
-        lastPong = started
+        lastPong = System.nanoTime()
 
         socket.soTimeout = 500
         val listener = Thread {
@@ -80,7 +95,7 @@ class PadSender(private val state: PadState, private val host: InetAddress) : Th
                         lastPong = System.nanoTime()
                         onPing?.invoke(((lastPong - sent) / 1_000_000L).toInt())
                     }
-                } catch (_: java.net.SocketTimeoutException) {
+                } catch (_: SocketTimeoutException) {
                 } catch (_: IOException) {
                     if (!running) break
                 }
@@ -101,30 +116,35 @@ class PadSender(private val state: PadState, private val host: InetAddress) : Th
             bb.putShort(12, state.ry.toShort())
 
             val now = System.nanoTime()
-            if (!cur.contentEquals(prev) || now - lastSend > 50_000_000L) {
+            if (!cur.contentEquals(prev) || now - lastSend > 100_000_000L) {
                 try {
                     socket.send(packet)
                 } catch (_: IOException) {
-                    // network hiccup, try again on the next loop
+                    // network hiccup, try again on the next wake-up
                 }
                 System.arraycopy(cur, 0, prev, 0, cur.size)
                 lastSend = now
             }
-            if (now - lastPing > 1_000_000_000L) {
+            if (now - lastPing > 2_000_000_000L) {
                 pingBuf.putLong(4, now)
                 try { socket.send(pingPacket) } catch (_: IOException) {}
                 lastPing = now
-                if (now - lastPong > 3_000_000_000L) onPing?.invoke(-1)
+                if (now - lastPong > 5_000_000_000L) onPing?.invoke(-1)
             }
-            try {
-                sleep(2)
-            } catch (_: InterruptedException) {
-                break
-            }
+            // Sleep until a touch wakes us, or at most until the next heartbeat is due.
+            LockSupport.parkNanos(this, 100_000_000L)
+            if (Thread.interrupted()) break
         }
+        state.listener = null
         // Tell the laptop everything is released.
         java.util.Arrays.fill(cur, 2, 14, 0.toByte())
         try { socket.send(packet) } catch (_: IOException) {}
         socket.close()
+    }
+
+    /** Stop and wake the loop right away. */
+    fun finish() {
+        running = false
+        LockSupport.unpark(this)
     }
 }

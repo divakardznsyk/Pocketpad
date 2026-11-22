@@ -16,25 +16,50 @@ object Net {
     const val FILE_PORT = 39501   // laptop listens (files from phone)
     const val PHONE_PORT = 39502  // phone listens (files from laptop)
 
+    private var wifiCallback: ConnectivityManager.NetworkCallback? = null
+
     /**
-     * When the Wi-Fi has no internet, Android likes to route app traffic over mobile data,
-     * which breaks local connections. Binding the process to the Wi-Fi network avoids that.
-     * If the phone is the hotspot (no Wi-Fi client network), nothing happens and that's fine.
+     * Wi-Fi mode: when the Wi-Fi has no internet, Android likes to route app traffic over mobile data,
+     * which breaks local connections, so we bind the app to the Wi-Fi network.
+     * USB / hotspot mode: the phone is the router, so we must NOT be bound to any Wi-Fi network.
      */
-    fun bindToWifi(ctx: Context) {
+    fun applyMode(ctx: Context, usb: Boolean) {
         try {
             val cm = ctx.applicationContext.getSystemService(ConnectivityManager::class.java)
+            wifiCallback?.let {
+                try { cm.unregisterNetworkCallback(it) } catch (_: Exception) {}
+            }
+            wifiCallback = null
+            cm.bindProcessToNetwork(null)
+            if (usb) return
             val req = NetworkRequest.Builder()
                 .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
                 .build()
-            cm.requestNetwork(req, object : ConnectivityManager.NetworkCallback() {
+            val cb = object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
                     cm.bindProcessToNetwork(network)
                 }
-            })
+            }
+            wifiCallback = cb
+            cm.requestNetwork(req, cb)
         } catch (_: Exception) {
             // Not fatal: local networking usually still works.
         }
+    }
+
+    /** True when the phone is sharing a USB cable connection (USB tethering is on). */
+    fun usbLinkUp(): Boolean {
+        try {
+            val all = NetworkInterface.getNetworkInterfaces()
+            while (all != null && all.hasMoreElements()) {
+                val ni = all.nextElement()
+                val n = ni.name.lowercase()
+                if (!ni.isUp) continue
+                if (n.startsWith("rndis") || n.startsWith("ncm") || n.startsWith("usb")) return true
+            }
+        } catch (_: Exception) {
+        }
+        return false
     }
 
     private fun broadcastAddresses(): List<InetAddress> {

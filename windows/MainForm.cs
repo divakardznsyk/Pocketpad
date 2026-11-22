@@ -21,17 +21,16 @@ static class Program
     }
 }
 
-/// <summary>One custom-drawn dark window: status, controller, files, address.</summary>
+/// <summary>One custom-drawn dark window: status in dots, controller, link, files, address.</summary>
 sealed class MainForm : Form
 {
-    static readonly Color Bg = Color.FromArgb(10, 10, 12);
-    static readonly Color CardBg = Color.FromArgb(20, 20, 23);
-    static readonly Color Line = Color.FromArgb(38, 38, 44);
-    static readonly Color Ink = Color.FromArgb(242, 242, 244);
-    static readonly Color Sub = Color.FromArgb(139, 139, 149);
-    static readonly Color Accent = Color.FromArgb(53, 224, 161);
-    static readonly Color Bad = Color.FromArgb(255, 107, 99);
-    static readonly Color Warn = Color.FromArgb(245, 197, 66);
+    static readonly Color Bg = Color.FromArgb(11, 11, 12);
+    static readonly Color Surface = Color.FromArgb(13, 13, 14);
+    static readonly Color Line = Color.FromArgb(46, 46, 49);
+    static readonly Color Outline = Color.FromArgb(78, 78, 82);
+    static readonly Color Ink = Color.FromArgb(237, 237, 232);
+    static readonly Color Sub = Color.FromArgb(138, 138, 134);
+    static readonly Color Accent = Color.FromArgb(255, 77, 46);
 
     readonly GamepadHost host = new();
     readonly FileService files = new();
@@ -39,20 +38,21 @@ sealed class MainForm : Form
     readonly System.Windows.Forms.Timer tick = new() { Interval = 500 };
     readonly List<(string Text, bool Ok)> activity = new();
 
-    readonly Font fTitle = new("Segoe UI Semibold", 20f);
-    readonly Font fHead = new("Segoe UI Semibold", 12f);
+    readonly Font fLabel = new("Consolas", 8.5f, FontStyle.Bold);
+    readonly Font fValue = new("Consolas", 10.5f, FontStyle.Bold);
     readonly Font fBody = new("Segoe UI", 10f);
     readonly Font fSmall = new("Segoe UI", 9f);
-    readonly Font fMono = new("Consolas", 12f);
+    readonly Font fMono = new("Consolas", 12f, FontStyle.Bold);
 
     string addresses = "";
+    string link = "NONE";
     int tickCount;
     bool dragging, hoverZone, hoverFolder, quitting, tipShown;
 
     float S => DeviceDpi / 96f;
     RectangleF R(float x, float y, float w, float h) => new(x * S, y * S, w * S, h * S);
-    RectangleF Zone => R(44, 274, 352, 96);
-    RectangleF FolderLink => R(296, 238, 100, 24);
+    RectangleF Zone => R(24, 346, 392, 92);
+    RectangleF FolderLink => R(296, 314, 120, 22);
     bool PhoneKnown => host.PhoneIp != null;
 
     [DllImport("dwmapi.dll")]
@@ -67,7 +67,7 @@ sealed class MainForm : Form
         BackColor = Bg;
         AllowDrop = true;
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer, true);
-        ClientSize = new Size((int)(440 * S), (int)(600 * S));
+        ClientSize = new Size((int)(440 * S), (int)(644 * S));
 
         var icon = AppIcon();
         if (icon != null) Icon = icon;
@@ -96,6 +96,7 @@ sealed class MainForm : Form
         {
             host.ReleaseIfStale();
             if (tickCount++ % 10 == 0) addresses = LocalAddresses();
+            link = LinkName(host.PhoneIp);
             Invalidate();
         };
         Shown += (_, _) =>
@@ -127,7 +128,7 @@ sealed class MainForm : Form
         {
             int on = 1;
             DwmSetWindowAttribute(Handle, 20, ref on, 4);        // dark title bar
-            int colour = 0x000C0A0A;                              // 0x00BBGGRR of the window background
+            int colour = 0x000C0B0B;                              // 0x00BBGGRR of the window background
             DwmSetWindowAttribute(Handle, 35, ref colour, 4);    // title bar colour (Windows 11)
             DwmSetWindowAttribute(Handle, 34, ref colour, 4);    // border colour (Windows 11)
         }
@@ -171,7 +172,7 @@ sealed class MainForm : Form
 
     static GraphicsPath Round(RectangleF r, float rad)
     {
-        float d = rad * 2;
+        float d = Math.Min(rad * 2, Math.Min(r.Width, r.Height));
         var p = new GraphicsPath();
         p.AddArc(r.X, r.Y, d, d, 180, 90);
         p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
@@ -191,6 +192,12 @@ sealed class MainForm : Form
         g.DrawPath(pen, path);
     }
 
+    void Hair(Graphics g, float x1, float y1, float x2, float y2)
+    {
+        using var pen = new Pen(Line, Math.Max(1f, S));
+        g.DrawLine(pen, x1 * S, y1 * S, x2 * S, y2 * S);
+    }
+
     void Txt(Graphics g, string t, Font f, Color c, RectangleF r,
         StringAlignment h = StringAlignment.Near, StringAlignment v = StringAlignment.Near)
     {
@@ -204,11 +211,42 @@ sealed class MainForm : Form
         g.DrawString(t, f, br, r, sf);
     }
 
-    void Dot(Graphics g, float cx, float cy, Color c)
+    void Dot(Graphics g, float cx, float cy, float rad, bool filled, Color c)
     {
-        using var b = new SolidBrush(c);
-        float r = 4.5f * S;
-        g.FillEllipse(b, cx * S - r, cy * S - r, r * 2, r * 2);
+        float r = rad * S;
+        if (filled)
+        {
+            using var b = new SolidBrush(c);
+            g.FillEllipse(b, cx * S - r, cy * S - r, r * 2, r * 2);
+        }
+        else
+        {
+            using var pen = new Pen(c, Math.Max(1f, S));
+            g.DrawEllipse(pen, cx * S - r, cy * S - r, r * 2, r * 2);
+        }
+    }
+
+    /// <summary>Dot-matrix text. x, y and pitch are in 96-dpi design pixels.</summary>
+    void DotText(Graphics g, string t, float x, float y, float pitch, Color lit)
+    {
+        float p = pitch * S;
+        float r = p * 0.34f;
+        using var on = new SolidBrush(lit);
+        using var off = new SolidBrush(Color.FromArgb(46, 255, 255, 255));
+        for (int i = 0; i < t.Length; i++)
+        {
+            var rows = DotFont.Rows(t[i]);
+            for (int row = 0; row < 7; row++)
+            {
+                for (int col = 0; col < 5; col++)
+                {
+                    bool isLit = ((rows[row] >> (4 - col)) & 1) == 1;
+                    float cx = x * S + (i * 6 + col) * p + p / 2;
+                    float cy = y * S + row * p + p / 2;
+                    g.FillEllipse(isLit ? on : off, cx - r, cy - r, r * 2, r * 2);
+                }
+            }
+        }
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -220,68 +258,79 @@ sealed class MainForm : Form
 
         bool active = host.PhoneActive;
         bool known = PhoneKnown;
+        var ip = host.PhoneIp;
 
-        // Header
-        Txt(g, "Pocketpad", fTitle, Ink, R(24, 16, 240, 40), v: StringAlignment.Center);
-        Box(g, R(240, 22, 176, 34), 17, CardBg, Line);
-        Dot(g, 258, 39, active ? Accent : known ? Warn : Sub);
-        Txt(g, active ? "Phone connected" : known ? "Phone nearby" : "Waiting for phone",
-            fSmall, Ink, R(272, 22, 140, 34), v: StringAlignment.Center);
+        // header: name in dots + link pill
+        DotText(g, "POCKETPAD", 24, 24, 3f, Ink);
+        Box(g, R(304, 18, 112, 32), 16, Color.Transparent, Outline);
+        Dot(g, 322, 34, 4f, active || known, active ? Accent : Sub);
+        Txt(g, active ? link.Replace(" CABLE", "") : "OFFLINE", fLabel, Ink, R(334, 18, 78, 32), v: StringAlignment.Center);
 
-        // Controller card
-        Box(g, R(24, 80, 392, 128), 20, CardBg, Line);
-        Txt(g, "Controller", fHead, Ink, R(44, 96, 200, 24));
+        // hero: big dot-matrix status
+        string word = active ? "CONNECTED" : known ? "NEARBY" : "WAITING";
+        float pitch = Math.Min(8f, 392f / (word.Length * 6 - 1));
+        DotText(g, word, 24, 84, pitch, Ink);
+        Dot(g, 408, 90, 5f, active, active ? Accent : Sub);
+        string sub = active ? $"PHONE  {ip}  -  {link}"
+            : known ? "PHONE FOUND  -  OPEN THE CONTROLLER ON IT"
+            : "OPEN POCKETPAD ON YOUR PHONE";
+        Txt(g, sub, fLabel, Sub, R(24, 84 + 7 * pitch + 16, 392, 20));
+
+        Hair(g, 24, 196, 416, 196);
+
+        // two cells: controller + link
         bool driverOk = host.DriverError == null;
-        Dot(g, 49, 141, driverOk ? Accent : Bad);
-        Txt(g, driverOk ? "Virtual Xbox controller ready" : "Controller driver missing",
-            fBody, Ink, R(62, 129, 330, 24), v: StringAlignment.Center);
-        string sub = host.NetworkError ??
-            (!driverOk ? "Run the Pocketpad installer again to add it, then reopen the app."
-            : active ? "Your phone is playing. Games see it as an Xbox controller."
-            : "On your phone, open Pocketpad and tap Start playing.");
-        Txt(g, sub, fSmall, host.NetworkError != null ? Bad : Sub, R(44, 160, 352, 40));
+        Txt(g, "CONTROLLER", fLabel, Sub, R(24, 214, 180, 18));
+        Txt(g, driverOk ? "XBOX 360" : "NO DRIVER", fValue, Ink, R(24, 236, 180, 22));
+        Txt(g, driverOk ? "VIRTUAL PAD READY" : "REINSTALL POCKETPAD", fLabel, driverOk ? Sub : Accent, R(24, 260, 190, 18));
+        Hair(g, 220, 208, 220, 282);
+        Txt(g, "LINK", fLabel, Sub, R(244, 214, 170, 18));
+        Txt(g, known ? link : "NONE", fValue, Ink, R(244, 236, 170, 22));
+        Txt(g, known ? "WIRELESS OR CABLE" : "NO PHONE YET", fLabel, Sub, R(244, 260, 170, 18));
+        if (host.NetworkError != null)
+            Txt(g, host.NetworkError, fSmall, Accent, R(24, 284, 392, 18));
 
-        // Files card
-        Box(g, R(24, 222, 392, 248), 20, CardBg, Line);
-        Txt(g, "Files", fHead, Ink, R(44, 238, 200, 24));
-        Txt(g, "Open folder", fSmall, hoverFolder ? Ink : Accent, FolderLink, StringAlignment.Far, StringAlignment.Center);
+        Hair(g, 24, 304, 416, 304);
+
+        // files
+        Txt(g, "FILES", fLabel, Sub, R(24, 316, 200, 18));
+        Txt(g, "OPEN FOLDER", fLabel, hoverFolder ? Ink : Accent, FolderLink, StringAlignment.Far, StringAlignment.Near);
 
         var zone = Zone;
-        Color zoneLine = dragging || (hoverZone && known) ? Accent : Color.FromArgb(62, 62, 70);
-        Box(g, zone, 14, Color.FromArgb(13, 13, 15), zoneLine, dashed: true);
+        Color zoneLine = dragging || (hoverZone && known) ? Accent : Outline;
+        Box(g, zone, 16, Surface, zoneLine, dashed: true);
+        float zy = zone.Y / S;
         if (known)
         {
-            Txt(g, "Drop files here to send to your phone", fBody, Ink,
-                R(zone.X / S, zone.Y / S + 22, 352, 24), StringAlignment.Center);
-            Txt(g, "or click to choose files", fSmall, Sub,
-                R(zone.X / S, zone.Y / S + 50, 352, 20), StringAlignment.Center);
+            Txt(g, "Drop files here to send to your phone", fBody, Ink, R(24, zy + 22, 392, 24), StringAlignment.Center);
+            Txt(g, "OR CLICK TO CHOOSE", fLabel, Sub, R(24, zy + 52, 392, 18), StringAlignment.Center);
         }
         else
         {
-            Txt(g, "Waiting for your phone…", fBody, Sub,
-                R(zone.X / S, zone.Y / S + 22, 352, 24), StringAlignment.Center);
-            Txt(g, "Open Pocketpad on the phone first", fSmall, Sub,
-                R(zone.X / S, zone.Y / S + 50, 352, 20), StringAlignment.Center);
+            Txt(g, "Waiting for your phone", fBody, Sub, R(24, zy + 22, 392, 24), StringAlignment.Center);
+            Txt(g, "OPEN POCKETPAD ON THE PHONE FIRST", fLabel, Sub, R(24, zy + 52, 392, 18), StringAlignment.Center);
         }
 
         if (activity.Count == 0)
         {
-            Txt(g, "Received files go to Downloads\\Pocketpad", fSmall, Sub, R(44, 384, 352, 20));
+            Txt(g, "Received files go to Downloads\\Pocketpad", fSmall, Sub, R(24, 452, 392, 20));
         }
         else
         {
             for (int i = 0; i < Math.Min(3, activity.Count); i++)
             {
                 var a = activity[i];
-                Txt(g, a.Text, fSmall, a.Ok ? Accent : Bad, R(44, 384 + i * 24, 352, 20));
+                Txt(g, a.Text, fSmall, a.Ok ? Ink : Accent, R(24, 452 + i * 22, 392, 20));
             }
         }
 
-        // Address card
-        Box(g, R(24, 484, 392, 92), 20, CardBg, Line);
-        Txt(g, "Laptop address", fSmall, Sub, R(44, 498, 300, 18));
-        Txt(g, addresses, fMono, Ink, R(44, 518, 352, 26));
-        Txt(g, "Type this on your phone if it doesn't connect by itself.", fSmall, Sub, R(44, 548, 352, 20));
+        Hair(g, 24, 528, 416, 528);
+
+        // address
+        Txt(g, "LAPTOP ADDRESS", fLabel, Sub, R(24, 542, 300, 18));
+        Txt(g, addresses, fMono, Ink, R(24, 562, 392, 26));
+        Txt(g, "Type this on your phone if it doesn't connect by itself.", fSmall, Sub, R(24, 592, 392, 18));
+        Txt(g, "USB: plug in the cable and turn on USB tethering on the phone.", fSmall, Sub, R(24, 612, 392, 18));
     }
 
     // ---------- mouse and drag-drop ----------
@@ -364,7 +413,7 @@ sealed class MainForm : Form
         }
         if (!File.Exists(path)) return;
         string name = Path.GetFileName(path);
-        Add("Sending " + name + "…", true);
+        Add("Sending " + name + "...", true);
         Task.Run(() =>
         {
             try
@@ -407,5 +456,43 @@ sealed class MainForm : Form
             }
         }
         return list.Count == 0 ? "Not on any network" : string.Join("   ", list);
+    }
+
+    /// <summary>Which of our network adapters shares a subnet with the phone: a USB cable, Wi-Fi or something else.</summary>
+    static string LinkName(IPAddress? phone)
+    {
+        if (phone == null) return "NONE";
+        try
+        {
+            foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (ni.OperationalStatus != OperationalStatus.Up) continue;
+                foreach (var ua in ni.GetIPProperties().UnicastAddresses)
+                {
+                    if (ua.Address.AddressFamily != AddressFamily.InterNetwork || ua.IPv4Mask == null) continue;
+                    if (!SameSubnet(ua.Address, phone, ua.IPv4Mask)) continue;
+                    string d = (ni.Description + " " + ni.Name).ToLowerInvariant();
+                    if (d.Contains("rndis") || d.Contains("remote ndis") || d.Contains("usb")) return "USB CABLE";
+                    if (ni.NetworkInterfaceType == NetworkInterfaceType.Wireless80211) return "WI-FI";
+                    return "NETWORK";
+                }
+            }
+        }
+        catch
+        {
+            // fall through
+        }
+        return "NETWORK";
+    }
+
+    static bool SameSubnet(IPAddress a, IPAddress b, IPAddress mask)
+    {
+        var x = a.GetAddressBytes();
+        var y = b.GetAddressBytes();
+        var m = mask.GetAddressBytes();
+        if (x.Length != 4 || y.Length != 4 || m.Length != 4) return false;
+        for (int i = 0; i < 4; i++)
+            if ((x[i] & m[i]) != (y[i] & m[i])) return false;
+        return true;
     }
 }
