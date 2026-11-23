@@ -9,10 +9,10 @@ android {
 
     defaultConfig {
         applicationId = "app.pocketpad"
-        minSdk = 30
+        minSdk = 26
         targetSdk = 34
-        versionCode = 10
-        versionName = "1.0"
+        versionCode = 11
+        versionName = "1.1"
     }
 
     // Stable key (committed on purpose) so every build installs as an update over the last one.

@@ -3,7 +3,9 @@ package app.pocketpad
 import android.app.Activity
 import android.content.Context
 import android.net.wifi.WifiManager
+import android.os.Build
 import android.os.Bundle
+import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
@@ -24,13 +26,14 @@ class GamepadActivity : Activity() {
 
         // Use the whole screen, including the area around the camera hole.
         window.attributes = window.attributes.also {
-            it.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            if (Build.VERSION.SDK_INT >= 28) it.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             // Battery: a dimmed OLED screen is the biggest saver while playing.
             if (prefs.getBoolean("dim", true)) it.screenBrightness = 0.2f
         }
         // Highest refresh rate at the current resolution (120 Hz on this phone) = smoother, lower touch-to-pixel delay.
         try {
-            val d = display!!
+            @Suppress("DEPRECATION")
+            val d = if (Build.VERSION.SDK_INT >= 30) display!! else windowManager.defaultDisplay
             val cur = d.mode
             val best = d.supportedModes
                 .filter { it.physicalWidth == cur.physicalWidth && it.physicalHeight == cur.physicalHeight }
@@ -69,7 +72,7 @@ class GamepadActivity : Activity() {
         if (prefs.getBoolean("ll", true)) {
             try {
                 val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-                wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "pocketpad").also {
+                wifiLock = wm.createWifiLock(if (Build.VERSION.SDK_INT >= 29) WifiManager.WIFI_MODE_FULL_LOW_LATENCY else @Suppress("DEPRECATION") WifiManager.WIFI_MODE_FULL_HIGH_PERF, "pocketpad").also {
                     it.setReferenceCounted(false)
                     it.acquire()
                 }
@@ -104,9 +107,16 @@ class GamepadActivity : Activity() {
     }
 
     private fun hideBars() {
-        window.insetsController?.let {
-            it.hide(WindowInsets.Type.systemBars())
-            it.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        if (Build.VERSION.SDK_INT >= 30) {
+            window.insetsController?.let {
+                it.hide(WindowInsets.Type.systemBars())
+                it.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
         }
     }
 }

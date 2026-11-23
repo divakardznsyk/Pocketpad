@@ -145,7 +145,7 @@ class GamepadView(
         super.onSizeChanged(w, h, oldw, oldh)
         rebuild()
         chipCache = null
-        systemGestureExclusionRects = listOf(Rect(0, 0, w, h))
+        if (android.os.Build.VERSION.SDK_INT >= 29) systemGestureExclusionRects = listOf(Rect(0, 0, w, h))
     }
 
     /** Recompute pixel positions from the preset. Cheap enough to run on every drag step. */
@@ -416,7 +416,12 @@ class GamepadView(
         val v = vibrator ?: return
         try {
             hapticExec.execute {
-                try { v.vibrate(VibrationEffect.createPredefined(VibrationEffect.EFFECT_TICK)) } catch (_: Exception) {}
+                try {
+                    v.vibrate(
+                        if (android.os.Build.VERSION.SDK_INT >= 29) VibrationEffect.createPredefined(VibrationEffect.EFFECT_TICK)
+                        else VibrationEffect.createOneShot(12, VibrationEffect.DEFAULT_AMPLITUDE),
+                    )
+                } catch (_: Exception) {}
             }
         } catch (_: Exception) {
         }
