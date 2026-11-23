@@ -8,14 +8,17 @@ namespace Pocketpad;
 /// <summary>
 /// Tiny local file transfer over TCP, no internet needed.
 /// Wire format (both directions): [2-byte big-endian name length][name UTF-8][8-byte big-endian size][bytes]
-/// The laptop listens on 39501 (phone -> laptop); the phone listens on 39502 (laptop -> phone).
+/// Phone -> laptop: the phone connects to 39501 and uploads.
+/// Laptop -> phone: the laptop sends a UDP offer (PPOF + token); the phone connects to 39503, sends the token and downloads.
 /// </summary>
 sealed class FileService : IDisposable
 {
     public const int ReceivePort = 39501;
-    public const int PhonePort = 39502;
+    public const int OfferPort = 39503;
 
     TcpListener? listener;
+    TcpListener? offerListener;
+    readonly Dictionary<long, (string Path, TaskCompletionSource Done)> offers = new();
     volatile bool running;
 
     /// <summary>Called with a temp file and the original name; the window decides where it is saved.</summary>
@@ -30,6 +33,9 @@ sealed class FileService : IDisposable
             listener.Start();
             running = true;
             new Thread(AcceptLoop) { IsBackground = true, Name = "pocketpad-files" }.Start();
+            offerListener = new TcpListener(IPAddress.Any, OfferPort);
+            offerListener.Start();
+            new Thread(OfferLoop) { IsBackground = true, Name = "pocketpad-offers" }.Start();
         }
         catch (Exception e)
         {
@@ -107,12 +113,71 @@ sealed class FileService : IDisposable
         }
     }
 
-    public static void SendTo(IPAddress phone, string path)
+    void OfferLoop()
     {
-        using var c = new TcpClient();
-        c.Connect(phone, PhonePort);
-        using var s = c.GetStream();
+        while (running && offerListener != null)
+        {
+            TcpClient c;
+            try { c = offerListener.AcceptTcpClient(); }
+            catch { break; }
+            new Thread(() => Serve(c)) { IsBackground = true }.Start();
+        }
+    }
 
+    void Serve(TcpClient c)
+    {
+        TaskCompletionSource? done = null;
+        try
+        {
+            using (c)
+            using (var s = c.GetStream())
+            {
+                var tb = new byte[8];
+                s.ReadExactly(tb);
+                long token = BinaryPrimitives.ReadInt64BigEndian(tb);
+                (string Path, TaskCompletionSource Done) o;
+                lock (offers)
+                {
+                    if (!offers.Remove(token, out o)) return; // unknown or already taken
+                }
+                done = o.Done;
+                WriteFile(s, o.Path);
+            }
+            done.SetResult();
+        }
+        catch (Exception e)
+        {
+            done?.TrySetException(e);
+        }
+    }
+
+    /// <summary>
+    /// Offer a file to the phone: ping it over UDP until it connects and pulls the file.
+    /// Throws TimeoutException when the phone never answers.
+    /// </summary>
+    public async Task OfferAsync(string path, Func<byte[], bool> sendUdp)
+    {
+        long token = Random.Shared.NextInt64();
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (offers) offers[token] = (path, tcs);
+        var pkt = new byte[12];
+        Encoding.ASCII.GetBytes("PPOF").CopyTo(pkt, 0);
+        BinaryPrimitives.WriteInt64BigEndian(pkt.AsSpan(4), token);
+        for (int i = 0; i < 24 && !tcs.Task.IsCompleted; i++)
+        {
+            sendUdp(pkt);
+            if (await Task.WhenAny(tcs.Task, Task.Delay(500)) == tcs.Task) break;
+        }
+        if (!tcs.Task.IsCompleted)
+        {
+            lock (offers) offers.Remove(token);
+            throw new TimeoutException("the phone didn't answer");
+        }
+        await tcs.Task;
+    }
+
+    static void WriteFile(Stream s, string path)
+    {
         byte[] name = Encoding.UTF8.GetBytes(Path.GetFileName(path));
         var lenBuf = new byte[2];
         BinaryPrimitives.WriteUInt16BigEndian(lenBuf, (ushort)name.Length);
@@ -131,5 +196,6 @@ sealed class FileService : IDisposable
     {
         running = false;
         try { listener?.Stop(); } catch { /* ignore */ }
+        try { offerListener?.Stop(); } catch { /* ignore */ }
     }
 }

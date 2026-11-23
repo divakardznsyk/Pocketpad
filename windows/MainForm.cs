@@ -305,7 +305,7 @@ sealed class MainForm : Form
         g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
         g.Clear(Bg);
 
-        bool active = host.PhoneActive;
+        bool active = host.PhoneSeen;
         bool known = PhoneKnown;
         var ip = host.PhoneIp;
         Color state = active ? Cyan : known ? Accent : Red;
@@ -539,16 +539,16 @@ sealed class MainForm : Form
         if (!File.Exists(path)) return;
         string name = Path.GetFileName(path);
         Add("Sending " + name + "...", true);
-        Task.Run(() =>
+        Task.Run(async () =>
         {
             try
             {
-                FileService.SendTo(ip, path);
+                await files.OfferAsync(path, host.SendToPhone);
                 Ui(() => Add("Sent " + name, true));
             }
             catch (Exception ex)
             {
-                Ui(() => Add("Couldn't send " + name + ": " + ex.Message + " - keep Pocketpad open on the phone", false));
+                Ui(() => Add("Couldn't send " + name + ": " + ex.Message + ". Open Pocketpad on the phone.", false));
             }
         });
     }

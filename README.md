@@ -40,6 +40,6 @@ files" in either app. Tap a line in the activity list to open the saved file (ph
 ## Under the hood
 
 - Controller: 14-byte UDP packets (port 39500; 6-byte mouse packets use the same port) into a virtual Xbox 360 pad via ViGEmBus.
-- Files: TCP (laptop 39501, phone 39502).
+- Files: TCP (phone uploads to 39501; for laptop-to-phone the phone pulls from 39503).
 - `android/` Kotlin, no libraries. `windows/` C# .NET 8. `installer/` Inno Setup script. CI builds all on every push.
 - The APK is signed with the key in `android/app/pocketpad.jks` (committed on purpose so updates install over old builds).

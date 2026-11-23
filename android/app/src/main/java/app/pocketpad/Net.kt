@@ -19,7 +19,7 @@ class Found(val ip: String, val name: String, val rtt: Int)
 object Net {
     const val PAD_PORT = 39500    // laptop listens (controller packets + discovery)
     const val FILE_PORT = 39501   // laptop listens (files from phone)
-    const val PHONE_PORT = 39502  // phone listens (files from laptop)
+    const val OFFER_PORT = 39503  // laptop listens (phone pulls files the laptop offered)
 
     private var wifiCallback: ConnectivityManager.NetworkCallback? = null
 

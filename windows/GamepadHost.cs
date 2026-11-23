@@ -48,6 +48,18 @@ sealed class GamepadHost : IDisposable
     public string? NetworkError { get; private set; }
     public volatile IPAddress? PhoneIp;
     public long LastPacketTick;
+    public long LastSeenTick;
+    public volatile IPEndPoint? PhoneEp; // where the phone's keep-alive socket listens: file offers go here
+
+    /// <summary>Any packet (controller, ping, keep-alive) in the last 6 seconds.</summary>
+    public bool PhoneSeen => LastSeenTick != 0 && Environment.TickCount64 - LastSeenTick < 6000;
+
+    public bool SendToPhone(byte[] d)
+    {
+        var ep = PhoneEp;
+        if (ep == null || udp == null) return false;
+        try { udp.Send(d, d.Length, ep); return true; } catch { return false; }
+    }
 
     public void Start()
     {
@@ -99,6 +111,7 @@ sealed class GamepadHost : IDisposable
             }
 
             PhoneIp = ep.Address;
+            LastSeenTick = Environment.TickCount64;
 
             if (data.Length >= 14 && data[0] == 0x01)
             {
@@ -117,6 +130,7 @@ sealed class GamepadHost : IDisposable
             }
             else if (data.Length >= 5 && Encoding.ASCII.GetString(data, 0, 5) == "PPAD?")
             {
+                PhoneEp = new IPEndPoint(ep.Address, ep.Port);
                 var reply = Encoding.UTF8.GetBytes("PPAD!" + Environment.MachineName);
                 try { udp.Send(reply, reply.Length, ep); } catch { /* ignore */ }
             }

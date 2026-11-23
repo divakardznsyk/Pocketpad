@@ -102,6 +102,7 @@ class MainActivity : Activity() {
         super.onStart()
         if (receiver == null) receiver = FileReceiver(
             this,
+            ipProvider = { prefs.getString("ip", "") ?: "" },
             onFile = { tmp, name -> runOnUiThread { pending.add(Pending(tmp, name)); pump() } },
             onEvent = { msg -> runOnUiThread { addLog(msg, false, null) } },
         ).also { it.start() }
