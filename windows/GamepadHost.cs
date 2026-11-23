@@ -55,12 +55,13 @@ sealed class GamepadHost : IDisposable
     public bool PhoneSeen => LastSeenTick != 0 && Environment.TickCount64 - LastSeenTick < 6000;
 
     public event Action<string>? TextReceived;
+    public event Action<int>? AudioRequest; // 0 off, 1 stream, 2 stream + mute laptop
 
-    public bool SendToPhone(byte[] d)
+    public bool SendToPhone(byte[] d, int len = -1)
     {
         var ep = PhoneEp;
         if (ep == null || udp == null) return false;
-        try { udp.Send(d, d.Length, ep); return true; } catch { return false; }
+        try { udp.Send(d, len < 0 ? d.Length : len, ep); return true; } catch { return false; }
     }
 
     public void Start()
@@ -124,6 +125,11 @@ sealed class GamepadHost : IDisposable
             {
                 LastPacketTick = Environment.TickCount64;
                 ApplyMouse(data);
+            }
+            else if (data.Length >= 5 && Encoding.ASCII.GetString(data, 0, 4) == "PPAS")
+            {
+                PhoneEp = new IPEndPoint(ep.Address, ep.Port);
+                AudioRequest?.Invoke(data[4]);
             }
             else if (data.Length >= 4 && Encoding.ASCII.GetString(data, 0, 4) == "PPTX")
             {

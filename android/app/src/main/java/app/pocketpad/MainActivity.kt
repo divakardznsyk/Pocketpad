@@ -57,6 +57,8 @@ class MainActivity : Activity() {
     private lateinit var modeHelp: TextView
     private lateinit var segBt: TextView
     private var applyingClip = false
+    private lateinit var audioBtn: TextView
+    private var audioOn = false
     private val clipSend = Runnable { receiver?.sendText(clip.text.toString()) }
     private lateinit var hero: TextView
     private lateinit var heroSub: TextView
@@ -131,7 +133,10 @@ class MainActivity : Activity() {
                 }
             },
             onEvent = { msg -> runOnUiThread { addLog(msg, msg.startsWith("RECEIVING"), null) } },
-        ).also { it.start() }
+        ).also {
+            it.start()
+            if (audioOn) applyAudio()
+        }
     }
 
     override fun onResume() {
@@ -338,6 +343,7 @@ class MainActivity : Activity() {
             addView(pillDot)
             addView(pillText)
         }
+        audioBtn = btn("Laptop audio on this phone: off", 0, 48, 10) { toggleAudio() }
         val gear = Sliders().apply {
             background = ripple(cham(Theme.surface, Theme.outline, 8), 8)
             isClickable = true
@@ -359,6 +365,7 @@ class MainActivity : Activity() {
             tv("// Play", 11f, Theme.cyan), hero, heroSub, heroLink,
             btn("Start playing", 1, 56, 16) { openController() },
             row(half("Change preset", 0, 44, true) { pickPreset() }, half("Customise", 0, 44, false) { customise() }, top = 10),
+            audioBtn,
         ))
 
         shareStatus = tv("", 12f, Theme.accent).apply { visibility = View.GONE; setPadding(0, dp(12), 0, 0) }
@@ -511,6 +518,7 @@ class MainActivity : Activity() {
             toggleRow("Dim screen while playing", "dim", true),
             toggleRow("Low-latency Wi-Fi", "ll", true),
             toggleRow("Haptics", "hap", true),
+            toggleRow("Mute laptop speakers while streaming audio", "muteLaptop", false),
             body("The USB cable also charges the phone while you play. Hotspot and Bluetooth drain it fastest.", 13f)
                 .apply { setPadding(0, dp(12), 0, 0) },
         ))
@@ -522,6 +530,18 @@ class MainActivity : Activity() {
             addView(homeScroll)
             addView(settingsScroll)
         })
+    }
+
+    /** Stream the laptop's sound to this phone (so earphones on the phone work); off = back on the laptop. */
+    private fun toggleAudio() {
+        audioOn = !audioOn
+        applyAudio()
+    }
+
+    private fun applyAudio() {
+        receiver?.setAudio(if (!audioOn) 0 else if (prefs.getBoolean("muteLaptop", false)) 2 else 1)
+        audioBtn.text = "LAPTOP AUDIO ON THIS PHONE: " + if (audioOn) "ON" else "OFF"
+        styleAs(audioBtn, if (audioOn) 1 else 0)
     }
 
     private fun showSettings(on: Boolean) {

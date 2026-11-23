@@ -35,20 +35,37 @@ class FileReceiver(
     private val sender = java.util.concurrent.Executors.newSingleThreadExecutor()
 
     /** Live text sync: send the clipboard box to the laptop (UDP, from the keep-alive socket). */
-    fun sendText(t: String) {
+    fun sendText(t: String) = sendRaw("PPTX".toByteArray() + t.toByteArray(Charsets.UTF_8))
+
+    private fun sendRaw(b: ByteArray) {
         try {
             sender.execute {
                 try {
                     val s = sockRef ?: return@execute
                     val ip = ipProvider()
                     if (ip.isBlank()) return@execute
-                    val b = "PPTX".toByteArray() + t.toByteArray(Charsets.UTF_8)
                     s.send(DatagramPacket(b, b.size, InetAddress.getByName(ip), Net.PAD_PORT))
                 } catch (_: Exception) {
                 }
             }
         } catch (_: Exception) {
         }
+    }
+
+    @Volatile
+    private var audioMode = 0 // 0 off, 1 stream, 2 stream and mute the laptop's speakers
+    private var player: AudioPlayer? = null
+
+    /** Ask the laptop to stream its sound to this phone (it keeps streaming while we repeat the request). */
+    fun setAudio(mode: Int) {
+        audioMode = mode
+        if (mode != 0) {
+            if (player == null) player = AudioPlayer().also { it.start() }
+        } else {
+            player?.stop()
+            player = null
+        }
+        sendRaw("PPAS".toByteArray() + byteArrayOf(mode.toByte()))
     }
 
     /**
@@ -63,6 +80,7 @@ class FileReceiver(
 
     fun stop() {
         running = false
+        if (audioMode != 0) setAudio(0)
         sender.shutdown()
     }
 
@@ -86,6 +104,7 @@ class FileReceiver(
                     sockRef = sock
                 }
                 try { sock.send(DatagramPacket(msg, msg.size, InetAddress.getByName(ip), Net.PAD_PORT)) } catch (_: Exception) {}
+                if (audioMode != 0) sendRaw("PPAS".toByteArray() + byteArrayOf(audioMode.toByte()))
                 val end = System.currentTimeMillis() + 2000
                 val buf = ByteArray(65536)
                 val p = DatagramPacket(buf, buf.size)
@@ -100,6 +119,9 @@ class FileReceiver(
                             val token = ByteBuffer.wrap(buf, 4, 8).long
                             val from = p.address
                             if (seen.add(token)) thread { pull(from, token) }
+                        } else if (p.length > 9 && String(buf, 0, 4) == "PPAU") {
+                            val rate = ByteBuffer.wrap(buf, 4, 4).order(java.nio.ByteOrder.LITTLE_ENDIAN).int
+                            player?.feed(rate, buf.copyOfRange(9, p.length))
                         } else if (p.length >= 4 && String(buf, 0, 4) == "PPTX") {
                             onText(String(buf, 4, p.length - 4, Charsets.UTF_8))
                         }

@@ -51,6 +51,8 @@ sealed class MainForm : Form
 
     readonly GamepadHost host = new();
     readonly FileService files = new();
+    readonly AudioStreamer audio = new();
+    long lastAudioAsk;
     readonly NotifyIcon tray = new();
     readonly System.Windows.Forms.Timer tick = new() { Interval = 500 };
     readonly System.Windows.Forms.Timer egg = new() { Interval = 45 };
@@ -185,11 +187,23 @@ sealed class MainForm : Form
         tick.Tick += (_, _) =>
         {
             host.ReleaseIfStale();
+            // the phone repeats its audio request every 2 s; if that stops, so do we (and the laptop's sound comes back)
+            if (audio.Running && Environment.TickCount64 - lastAudioAsk > 7000) audio.Stop();
             if (tickCount++ % 10 == 0) addresses = LocalAddresses();
             link = LinkName(host.PhoneIp);
             if (Visible) Invalidate(); // nothing to repaint while it's in the tray
         };
         egg.Tick += (_, _) => EggStep();
+        host.AudioRequest += mode => Ui(() =>
+        {
+            if (mode == 0) { audio.Stop(); return; }
+            lastAudioAsk = Environment.TickCount64;
+            if (!audio.Running)
+            {
+                try { audio.Start((d, n) => host.SendToPhone(d, n), mode == 2); }
+                catch (Exception ex) { audio.Stop(); Add("Couldn't capture laptop audio: " + ex.Message, false); }
+            }
+        });
         Shown += (_, _) =>
         {
             host.Start();
@@ -250,6 +264,7 @@ sealed class MainForm : Form
         tick.Stop();
         egg.Stop();
         clipTimer.Stop();
+        audio.Dispose();
         tray.Visible = false;
         tray.Dispose();
         host.Dispose();
@@ -380,7 +395,7 @@ sealed class MainForm : Form
         Panel(g, R(226, 206, 190, 70), 10, Surface, Line);
         Txt(g, "LINK", fLabel, Sub, R(242, 216, 160, 16));
         Txt(g, known ? link : "NONE", fValue, Ink, R(242, 232, 160, 22));
-        Txt(g, known ? "WIRELESS OR CABLE" : "NO PHONE YET", fLabel, Sub, R(242, 254, 160, 16));
+        Txt(g, audio.Running ? "AUDIO > PHONE" : known ? "WIRELESS OR CABLE" : "NO PHONE YET", fLabel, audio.Running ? Cyan : Sub, R(242, 254, 160, 16));
         if (host.NetworkError != null)
             Txt(g, host.NetworkError, fSmall, Red, R(24, 276, 392, 12));
 

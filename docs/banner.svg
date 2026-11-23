@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="360" viewBox="0 0 1280 360" role="img" aria-label="Pocketpad">
+  <rect width="1280" height="360" fill="#000"/>
+  <g fill="none" stroke="#2c2b22" stroke-width="1">
+    <path d="M0 60H1280M0 120H1280M0 180H1280M0 240H1280M0 300H1280" opacity=".5"/>
+  </g>
+  <path d="M60 40H1220V260L1180 320H60V80Z" fill="#0a0a09" stroke="#58563f" stroke-width="2"/>
+  <path d="M60 80L100 40" stroke="#ded040" stroke-width="6"/>
+  <path d="M1180 320L1220 280" stroke="#ded040" stroke-width="6"/>
+  <text x="110" y="108" font-family="Bahnschrift, 'Segoe UI', Arial, sans-serif" font-size="22" font-weight="700" letter-spacing="4" fill="#3eb6bc">// PHONE AS CONTROLLER</text>
+  <text x="104" y="212" font-family="Bahnschrift, 'Arial Narrow', Arial, sans-serif" font-size="108" font-weight="700" letter-spacing="8" fill="#e8e4d0">POCKETPAD</text>
+  <text x="110" y="268" font-family="Bahnschrift, 'Segoe UI', Arial, sans-serif" font-size="26" letter-spacing="1" fill="#84806a">Controller, touchpad, files, clipboard and game audio. Phone to Windows, no internet.</text>
+  <circle cx="1130" cy="110" r="9" fill="#ded040"/>
+  <circle cx="1100" cy="140" r="9" fill="none" stroke="#ced4da" stroke-opacity="0"/>
+</svg>
