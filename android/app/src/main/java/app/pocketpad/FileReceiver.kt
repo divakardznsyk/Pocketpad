@@ -115,7 +115,7 @@ class FileReceiver(
                 val size = din.readLong()
 
                 // Into a temp file first; the app then saves it where the person chose.
-                val tmp = File.createTempFile("in", ".tmp", ctx.cacheDir)
+                val tmp = File.createTempFile("pocketpad", ".tmp", ctx.cacheDir)
                 tmp.outputStream().use { out ->
                     val buf = ByteArray(256 * 1024)
                     var left = size
