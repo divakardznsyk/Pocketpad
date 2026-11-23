@@ -30,7 +30,7 @@ class GamepadActivity : Activity() {
         }
         // Highest refresh rate at the current resolution (120 Hz on this phone) = smoother, lower touch-to-pixel delay.
         try {
-            val d = display
+            val d = display!!
             val cur = d.mode
             val best = d.supportedModes
                 .filter { it.physicalWidth == cur.physicalWidth && it.physicalHeight == cur.physicalHeight }
