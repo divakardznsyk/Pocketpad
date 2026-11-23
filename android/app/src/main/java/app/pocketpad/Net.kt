@@ -11,6 +11,8 @@ import java.net.InetAddress
 import java.net.NetworkInterface
 import java.net.SocketTimeoutException
 
+class Found(val ip: String, val name: String, val rtt: Int)
+
 object Net {
     const val PAD_PORT = 39500    // laptop listens (controller packets + discovery)
     const val FILE_PORT = 39501   // laptop listens (files from phone)
@@ -78,14 +80,15 @@ object Net {
         return out.toList()
     }
 
-    /** Looks for the laptop app. Returns (ip, computerName) or null. Blocks up to ~3 seconds. */
-    fun discover(savedIp: String?): Pair<String, String>? {
+    /** Looks for the laptop app. Returns address, computer name and round trip in ms, or null. Blocks up to ~3 seconds. */
+    fun discover(savedIp: String?): Found? {
         val msg = "PPAD?".toByteArray()
         val s = DatagramSocket()
         try {
             s.broadcast = true
             s.soTimeout = 700
             repeat(4) {
+                val t0 = System.nanoTime()
                 for (b in broadcastAddresses()) {
                     try { s.send(DatagramPacket(msg, msg.size, b, PAD_PORT)) } catch (_: Exception) {}
                 }
@@ -105,7 +108,7 @@ object Net {
                     s.receive(p)
                     val txt = String(p.data, 0, p.length)
                     if (txt.startsWith("PPAD!")) {
-                        return Pair(p.address.hostAddress ?: "", txt.substring(5))
+                        return Found(p.address.hostAddress ?: "", txt.substring(5), ((System.nanoTime() - t0) / 1_000_000L).toInt())
                     }
                 } catch (_: SocketTimeoutException) {
                 }

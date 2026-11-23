@@ -39,18 +39,18 @@ object Act {
     /** Face-button colour, 0 for neutral buttons. */
     fun color(a: Int, playstation: Boolean): Int = if (playstation) {
         when (a) {
-            A -> 0xFF6EA8FF.toInt()
-            B -> 0xFFFF6B6B.toInt()
-            X -> 0xFFE58BD0.toInt()
-            Y -> 0xFF5FD3A5.toInt()
+            A -> 0xFF6E8FD9.toInt()
+            B -> 0xFFCE424C.toInt()
+            X -> 0xFFC77DB0.toInt()
+            Y -> 0xFF60B88A.toInt()
             else -> 0
         }
     } else {
         when (a) {
-            A -> 0xFF4CD08A.toInt()
-            B -> 0xFFFF5F66.toInt()
-            X -> 0xFF5B9BFF.toInt()
-            Y -> 0xFFF5C542.toInt()
+            A -> 0xFF60B88A.toInt()
+            B -> 0xFFCE424C.toInt()
+            X -> 0xFF3EB6BC.toInt()
+            Y -> 0xFFDED040.toInt()
             else -> 0
         }
     }
@@ -62,11 +62,12 @@ class Ctl(val id: String, val kind: Int, val a: Float, val b: Float, val natural
         const val CIRCLE = 0
         const val RECT = 1
         const val STICK = 2
+        const val PAD = 3
     }
 }
 
 /** Where a control sits (centre as a fraction of screen width/height), how big, and what it sends. */
-class CC(var x: Float, var y: Float, var scale: Float, var action: Int)
+class CC(var x: Float, var y: Float, var scale: Float, var action: Int, var visible: Boolean = true)
 
 object Layout {
     val all = listOf(
@@ -88,6 +89,7 @@ object Layout {
         Ctl("B", Ctl.CIRCLE, 0.085f, 0.085f, Act.B),
         Ctl("LS", Ctl.STICK, 0.21f, 0.21f, -1),
         Ctl("RS", Ctl.STICK, 0.20f, 0.20f, -1),
+        Ctl("TP", Ctl.PAD, 0.30f, 0.18f, -1),
     )
 
     private const val ASPECT = 2.22f // reference screen is 20:9
@@ -100,6 +102,8 @@ object Layout {
         }
         put("LT", 0.08f, 0.08f); put("LB", 0.08f, 0.22f)
         put("RT", 0.92f, 0.08f); put("RB", 0.92f, 0.22f)
+        put("TP", 0.5f, 0.45f)
+        m["TP"]!!.visible = false // touchpad is opt-in
         put("BACK", 0.455f, 0.30f); put("START", 0.545f, 0.30f)
         // face buttons
         val fx = 0.88f
@@ -130,6 +134,7 @@ class Preset(
     var playstation: Boolean,
     var leftGain: Float = 1.4f,
     var rightGain: Float = 1.4f,
+    var padSpeed: Float = 1.5f,
     val cc: MutableMap<String, CC> = Layout.fresh(playstation),
 ) {
     fun resetLayout() {
@@ -143,6 +148,7 @@ class Preset(
         val f = Layout.fresh(ps)
         for ((id, c) in f) {
             val mine = cc[id]
+            if (id == "TP" && mine != null) continue
             if (mine == null) cc[id] = c else {
                 mine.x = c.x
                 mine.y = c.y
@@ -152,8 +158,8 @@ class Preset(
 
     fun copyAs(newName: String): Preset {
         val c = HashMap<String, CC>()
-        for ((k, v) in cc) c[k] = CC(v.x, v.y, v.scale, v.action)
-        return Preset(newName, playstation, leftGain, rightGain, c)
+        for ((k, v) in cc) c[k] = CC(v.x, v.y, v.scale, v.action, v.visible)
+        return Preset(newName, playstation, leftGain, rightGain, padSpeed, c)
     }
 
     fun toJson(): JSONObject {
@@ -162,9 +168,10 @@ class Preset(
         o.put("ps", playstation)
         o.put("lg", leftGain.toDouble())
         o.put("rg", rightGain.toDouble())
+        o.put("pg", padSpeed.toDouble())
         val c = JSONObject()
         for ((k, v) in cc) {
-            c.put(k, JSONArray().put(v.x.toDouble()).put(v.y.toDouble()).put(v.scale.toDouble()).put(v.action))
+            c.put(k, JSONArray().put(v.x.toDouble()).put(v.y.toDouble()).put(v.scale.toDouble()).put(v.action).put(if (v.visible) 1 else 0))
         }
         o.put("c", c)
         return o
@@ -176,6 +183,7 @@ class Preset(
             val p = Preset(
                 o.optString("name", "PRESET"), ps,
                 o.optDouble("lg", 1.4).toFloat(), o.optDouble("rg", 1.4).toFloat(),
+                o.optDouble("pg", 1.5).toFloat(),
             )
             val c = o.optJSONObject("c")
             if (c != null) {
@@ -187,6 +195,7 @@ class Preset(
                     cfg.scale = a.optDouble(2, 1.0).toFloat().coerceIn(0.5f, 2.0f)
                     val act = a.optInt(3, ctl.natural)
                     if (ctl.natural >= 0 && act in 0..15) cfg.action = act
+                    if (a.length() > 4) cfg.visible = a.optInt(4, 1) != 0
                 }
             }
             return p

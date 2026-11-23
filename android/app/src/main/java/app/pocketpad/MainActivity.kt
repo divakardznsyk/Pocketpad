@@ -11,9 +11,11 @@ import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.net.Uri
+import android.webkit.MimeTypeMap
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.provider.Settings
 import android.text.InputType
@@ -39,15 +41,19 @@ class MainActivity : Activity() {
     private lateinit var presets: MutableList<Preset>
     private var sel = 0
 
-    private lateinit var hero: DotText
+    private lateinit var title: TextView
+    private lateinit var hero: TextView
     private lateinit var heroSub: TextView
-    private lateinit var heroDot: View
+    private lateinit var heroLink: TextView
     private lateinit var pillText: TextView
     private lateinit var pillDot: View
     private lateinit var chipRow: LinearLayout
     private lateinit var ipField: EditText
     private lateinit var hint: TextView
     private lateinit var shareStatus: TextView
+    private lateinit var logBox: LinearLayout
+    private lateinit var saveAsk: TextView
+    private lateinit var saveFolder: TextView
     private lateinit var usbBox: LinearLayout
     private lateinit var usbStatus: TextView
     private lateinit var segWifi: TextView
@@ -55,6 +61,19 @@ class MainActivity : Activity() {
 
     private var receiver: FileReceiver? = null
     private val ui = Handler(Looper.getMainLooper())
+
+    private var linkState = 0
+    private var linkName = ""
+    private var linkRtt = -1
+
+    // incoming files waiting to be saved
+    private class Pending(val tmp: File, val name: String)
+    private class Entry(val text: String, val ok: Boolean, val uri: Uri?)
+    private val pending = ArrayDeque<Pending>()
+    private val log = ArrayList<Entry>()
+    private var asking = false
+    private var resumed = false
+    private var eggBusy = false
 
     private val prefs get() = getSharedPreferences("pocketpad", Context.MODE_PRIVATE)
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
@@ -67,6 +86,7 @@ class MainActivity : Activity() {
         buildUi()
         ipField.setText(prefs.getString("ip", ""))
         refreshPreset()
+        refreshSave()
         setMode(prefs.getInt("mode", 0))
         handleShareIntent(intent)
         ui.postDelayed({ discover() }, 800)
@@ -80,11 +100,16 @@ class MainActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
-        receiver = FileReceiver(this) { msg -> runOnUiThread { setShare(msg, true) } }.also { it.start() }
+        receiver = FileReceiver(
+            this,
+            onFile = { tmp, name -> runOnUiThread { pending.add(Pending(tmp, name)); pump() } },
+            onEvent = { msg -> runOnUiThread { addLog(msg, false, null) } },
+        ).also { it.start() }
     }
 
     override fun onResume() {
         super.onResume()
+        resumed = true
         // Presets may have been edited on the controller screen.
         presets = PresetStore.load(this)
         sel = PresetStore.selected(this, presets.size)
@@ -92,6 +117,12 @@ class MainActivity : Activity() {
             refreshPreset()
             updateUsbStatus()
         }
+        pump()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        resumed = false
     }
 
     override fun onStop() {
@@ -102,23 +133,19 @@ class MainActivity : Activity() {
 
     // ---------- small UI helpers ----------
 
-    private fun shape(color: Int, radius: Int, stroke: Int = 0): GradientDrawable =
-        GradientDrawable().apply {
-            setColor(color)
-            cornerRadius = dp(radius).toFloat()
-            if (stroke != 0) setStroke(dp(1), stroke)
-        }
+    private fun cham(fill: Int, stroke: Int, cutDp: Int, tick: Int = 0) =
+        ChamferDrawable(fill, stroke, dp(1).toFloat(), dp(cutDp).toFloat(), tick)
 
-    private fun ripple(content: Drawable, radius: Int): Drawable =
-        RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), content, shape(Color.WHITE, radius))
+    private fun ripple(content: Drawable, cutDp: Int): Drawable =
+        RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), content, cham(Color.WHITE, 0, cutDp))
 
-    private fun mono(s: String, sp: Float, color: Int = Theme.ink, bold: Boolean = false): TextView =
+    private fun tv(s: String, sp: Float, color: Int = Theme.ink, bold: Boolean = true, upper: Boolean = true): TextView =
         TextView(this).apply {
-            text = s.uppercase()
+            text = if (upper) s.uppercase() else s
             textSize = sp
             setTextColor(color)
-            typeface = Typeface.create(Typeface.MONOSPACE, if (bold) Typeface.BOLD else Typeface.NORMAL)
-            letterSpacing = 0.06f
+            typeface = Theme.cond(bold)
+            letterSpacing = if (upper) 0.1f else 0.02f
         }
 
     private fun body(s: String, sp: Float, color: Int = Theme.sub): TextView =
@@ -126,7 +153,7 @@ class MainActivity : Activity() {
             text = s
             textSize = sp
             setTextColor(color)
-            typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+            typeface = Theme.cond(false)
             setLineSpacing(0f, 1.15f)
         }
 
@@ -136,49 +163,41 @@ class MainActivity : Activity() {
     private val match = ViewGroup.LayoutParams.MATCH_PARENT
     private val wrap = ViewGroup.LayoutParams.WRAP_CONTENT
 
-    /** kind: 0 outline, 1 filled (off-white), 2 accent. */
+    /** kind: 0 outline, 1 filled yellow. */
     private fun styleAs(v: TextView, kind: Int) {
-        val fill = when (kind) {
-            1 -> Theme.ink
-            2 -> Theme.accent
-            else -> Color.TRANSPARENT
-        }
-        v.setTextColor(if (kind == 0) Theme.ink else Theme.bg)
-        v.background = ripple(shape(fill, 100, if (kind == 0) Theme.outline else 0), 100)
+        v.setTextColor(if (kind == 1) Theme.bg else Theme.ink)
+        v.background = ripple(if (kind == 1) cham(Theme.accent, Theme.accent, 10) else cham(Theme.surface, Theme.outline, 10), 10)
     }
 
-    private fun pill(label: String, kind: Int, height: Int = 52, onClick: () -> Unit): TextView =
-        mono(label, 13f, Theme.ink, true).apply {
+    private fun btn(label: String, kind: Int, h: Int = 52, top: Int = 12, onClick: () -> Unit): TextView =
+        tv(label, 14f, Theme.ink).apply {
             gravity = Gravity.CENTER
             isClickable = true
             styleAs(this, kind)
             setOnClickListener { onClick() }
-            layoutParams = lp(match, dp(height), 12)
+            layoutParams = lp(match, dp(h), top)
         }
 
-    private fun hairline(): View = View(this).apply {
-        setBackgroundColor(Theme.line)
-        layoutParams = lp(match, 1, 26).apply { bottomMargin = dp(22) }
-    }
+    private fun card(vararg views: View): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = cham(Theme.surface, Theme.line, 14, Theme.accent)
+            setPadding(dp(18), dp(16), dp(18), dp(18))
+            layoutParams = lp(match, wrap, 16)
+            for (v in views) addView(v)
+        }
 
     private fun section(label: String): TextView =
-        mono(label, 11f, Theme.sub, true).apply { setPadding(0, 0, 0, dp(6)) }
+        tv("// $label", 11f, Theme.cyan).apply { setPadding(0, 0, 0, dp(8)) }
 
     private fun dot(sizeDp: Int): View = View(this).apply {
         layoutParams = LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp))
     }
 
-    private fun setDot(v: View, state: Int) { // 0 hollow, 1 grey, 2 accent
+    private fun setDot(v: View, color: Int) {
         v.background = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
-            when (state) {
-                2 -> setColor(Theme.accent)
-                1 -> setColor(Theme.sub)
-                else -> {
-                    setColor(Color.TRANSPARENT)
-                    setStroke(dp(1), Theme.sub)
-                }
-            }
+            setColor(color)
         }
     }
 
@@ -187,22 +206,22 @@ class MainActivity : Activity() {
     private fun buildUi() {
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(22), dp(20), dp(22), dp(40))
+            setPadding(dp(20), dp(16), dp(20), dp(40))
         }
 
-        // top bar: dot-matrix name + link pill
-        val title = DotText(this).apply {
-            text = "POCKETPAD"
-            maxPitch = dp(3).toFloat()
+        // top bar: name (tap it) + link pill
+        title = tv("Pocketpad", 24f, Theme.ink).apply {
+            letterSpacing = 0.2f
             layoutParams = LinearLayout.LayoutParams(0, wrap, 1f)
+            setOnClickListener { egg() }
         }
         pillDot = dot(8).apply { (layoutParams as LinearLayout.LayoutParams).marginEnd = dp(8) }
-        pillText = mono("", 11f, Theme.ink, true)
+        pillText = tv("", 11f, Theme.ink)
         val linkPill = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            background = ripple(shape(Color.TRANSPARENT, 100, Theme.outline), 100)
-            setPadding(dp(14), dp(9), dp(16), dp(9))
+            background = ripple(cham(Theme.surface, Theme.outline, 8), 8)
+            setPadding(dp(12), dp(8), dp(14), dp(8))
             isClickable = true
             setOnClickListener { discover() }
             addView(pillDot)
@@ -215,120 +234,122 @@ class MainActivity : Activity() {
             addView(linkPill)
         })
 
-        // hero: current preset in big dots, accent dot when the laptop is found
-        hero = DotText(this).apply {
-            maxPitch = dp(9).toFloat()
-            layoutParams = FrameLayout.LayoutParams(match, wrap)
+        // hero: the active preset
+        hero = tv("", 44f, Theme.ink).apply { letterSpacing = 0.04f; setPadding(0, dp(4), 0, 0) }
+        heroSub = tv("", 12f, Theme.sub)
+        heroLink = tv("", 12f, Theme.sub).apply { setPadding(0, dp(6), 0, 0) }
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = lp(match, wrap, 8)
+            addView(btn("Customise", 0, 48, 0) { customise() }.apply {
+                layoutParams = lp(0, dp(48), 0, 1f).apply { marginEnd = dp(6) }
+            })
+            addView(btn("Sensitivity", 0, 48, 0) { sensitivityDialog() }.apply {
+                layoutParams = lp(0, dp(48), 0, 1f).apply { marginStart = dp(6) }
+            })
         }
-        heroDot = View(this).apply {
-            layoutParams = FrameLayout.LayoutParams(dp(12), dp(12), Gravity.TOP or Gravity.END)
-        }
-        col.addView(FrameLayout(this).apply {
-            addView(hero)
-            addView(heroDot)
-            layoutParams = lp(match, wrap, 44)
-        })
-        heroSub = mono("", 11f, Theme.sub).apply { setPadding(0, dp(14), 0, 0) }
-        col.addView(heroSub)
-
-        col.addView(pill("START PLAYING   >", 1, 60) { openController() }.apply { layoutParams = lp(match, dp(60), 28) })
-
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        row.addView(pill("CUSTOMISE", 0, 48) { customise() }.apply {
-            layoutParams = lp(0, dp(48), 0, 1f).apply { marginEnd = dp(6) }
-        })
-        row.addView(pill("STICK SPEED", 0, 48) { sensitivityDialog() }.apply {
-            layoutParams = lp(0, dp(48), 0, 1f).apply { marginStart = dp(6) }
-        })
-        row.layoutParams = lp(match, wrap, 12)
-        col.addView(row)
+        col.addView(card(
+            tv("// Active preset", 11f, Theme.cyan), hero, heroSub, heroLink,
+            btn("Start playing", 1, 56, 18) { openController() }, actions,
+        ))
 
         // presets
-        col.addView(section("PRESETS").apply { setPadding(0, dp(28), 0, dp(10)) })
+        col.addView(section("Presets").apply { setPadding(0, dp(28), 0, dp(10)) })
         chipRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         col.addView(HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
             addView(chipRow)
         })
-        col.addView(body("One preset per game. Each keeps its own layout, button changes and stick speed. Hold a preset for more options.", 13f)
-            .apply { setPadding(0, dp(12), 0, 0) })
+        col.addView(body("One preset per game: layout, button changes, stick and touchpad speed. Hold a preset for more options.", 13f)
+            .apply { setPadding(0, dp(10), 0, 0) })
 
         // files
-        col.addView(hairline())
-        col.addView(section("FILES"))
-        col.addView(body("Send anything to the laptop, or use the drop zone in the laptop app. Keep this screen open to receive.", 14f))
-        col.addView(pill("SEND TO LAPTOP", 0) { pickFiles() })
-        shareStatus = mono("", 12f, Theme.accent).apply {
-            visibility = View.GONE
-            setPadding(0, dp(12), 0, 0)
+        shareStatus = tv("", 12f, Theme.accent).apply { visibility = View.GONE; setPadding(0, dp(12), 0, 0) }
+        logBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        saveAsk = tv("Ask every time", 12f).apply {
+            gravity = Gravity.CENTER
+            isClickable = true
+            setOnClickListener { prefs.edit().remove("tree").apply(); refreshSave() }
+            layoutParams = lp(0, dp(44), 0, 1f).apply { marginEnd = dp(6) }
         }
-        col.addView(shareStatus)
+        saveFolder = tv("Choose folder", 12f).apply {
+            gravity = Gravity.CENTER
+            isClickable = true
+            setOnClickListener { startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), 3) }
+            layoutParams = lp(0, dp(44), 0, 1f).apply { marginStart = dp(6) }
+        }
+        col.addView(card(
+            section("Files"),
+            body("Send anything to the laptop, or use the drop zone in the laptop app. Keep this screen open to receive.", 14f),
+            btn("Send to laptop", 0) { pickFiles() },
+            tv("Save received files", 11f, Theme.sub).apply { setPadding(0, dp(18), 0, dp(8)) },
+            LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; addView(saveAsk); addView(saveFolder) },
+            shareStatus, logBox,
+        ))
 
         // connection
-        col.addView(hairline())
-        col.addView(section("CONNECTION"))
-        val seg = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        segWifi = mono("WI-FI / HOTSPOT", 12f, Theme.ink, true).apply {
+        segWifi = tv("Wi-Fi / hotspot", 12f).apply {
             gravity = Gravity.CENTER
             isClickable = true
             setOnClickListener { setMode(0) }
-            layoutParams = lp(0, dp(46), 0, 1f).apply { marginEnd = dp(6) }
+            layoutParams = lp(0, dp(44), 0, 1f).apply { marginEnd = dp(6) }
         }
-        segUsb = mono("USB CABLE", 12f, Theme.ink, true).apply {
+        segUsb = tv("USB cable", 12f).apply {
             gravity = Gravity.CENTER
             isClickable = true
             setOnClickListener { setMode(1) }
-            layoutParams = lp(0, dp(46), 0, 1f).apply { marginStart = dp(6) }
+            layoutParams = lp(0, dp(44), 0, 1f).apply { marginStart = dp(6) }
         }
-        seg.addView(segWifi)
-        seg.addView(segUsb)
-        col.addView(seg)
-
+        usbStatus = tv("", 12f, Theme.sub).apply { setPadding(0, dp(12), 0, 0) }
         usbBox = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(16), 0, 0)
             addView(body("1.  Plug the phone into the laptop.\n2.  Turn on USB tethering.\n3.  Tap Find below.", 14f, Theme.ink))
-            addView(pill("OPEN TETHERING SETTINGS", 0, 46) { openTetherSettings() })
-            usbStatus = mono("", 12f, Theme.sub, true).apply { setPadding(0, dp(12), 0, 0) }
+            addView(btn("Open tethering settings", 0, 44) { openTetherSettings() })
             addView(usbStatus)
         }
-        col.addView(usbBox)
-
         ipField = EditText(this).apply {
             hint = "192.168.1.5"
-            setHintTextColor(Color.rgb(90, 90, 94))
+            setHintTextColor(Color.rgb(90, 88, 74))
             setTextColor(Theme.ink)
             textSize = 16f
             typeface = Typeface.MONOSPACE
             inputType = InputType.TYPE_CLASS_PHONE
             setSingleLine(true)
-            background = shape(Color.TRANSPARENT, 100, Theme.outline)
-            setPadding(dp(20), 0, dp(20), 0)
+            background = cham(Theme.surface, Theme.outline, 10)
+            setPadding(dp(18), 0, dp(18), 0)
             layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f)
         }
-        val find = mono("FIND", 12f, Theme.bg, true).apply {
+        val find = tv("Find", 12f, Theme.bg).apply {
             gravity = Gravity.CENTER
             isClickable = true
             styleAs(this, 1)
             setOnClickListener { discover() }
             layoutParams = LinearLayout.LayoutParams(dp(84), dp(48)).apply { marginStart = dp(10) }
         }
-        col.addView(LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            addView(ipField)
-            addView(find)
-            layoutParams = lp(match, wrap, 16)
-        })
         hint = body("", 13f).apply { setPadding(0, dp(12), 0, 0) }
-        col.addView(hint)
+        col.addView(card(
+            section("Connection"),
+            LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; addView(segWifi); addView(segUsb) },
+            usbBox,
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = lp(match, wrap, 16)
+                addView(ipField)
+                addView(find)
+            },
+            hint,
+        ))
 
-        // battery
-        col.addView(hairline())
-        col.addView(section("BATTERY"))
-        col.addView(toggleRow("DIM SCREEN WHILE PLAYING", "dim", true))
-        col.addView(toggleRow("LOW-LATENCY WI-FI", "ll", true))
-        col.addView(body("The USB cable also charges the phone while you play, and hotspot drains it fastest.", 13f)
-            .apply { setPadding(0, dp(12), 0, 0) })
+        // performance
+        col.addView(card(
+            section("Performance"),
+            toggleRow("Dim screen while playing", "dim", true),
+            toggleRow("Low-latency Wi-Fi", "ll", true),
+            toggleRow("Haptics", "hap", true),
+            body("The USB cable also charges the phone while you play. Hotspot drains it fastest.", 13f)
+                .apply { setPadding(0, dp(12), 0, 0) },
+        ))
 
         setContentView(ScrollView(this).apply {
             setBackgroundColor(Theme.bg)
@@ -339,12 +360,10 @@ class MainActivity : Activity() {
     }
 
     private fun toggleRow(label: String, key: String, def: Boolean): View {
-        val state = TextView(this)
+        val state = tv("", 12f)
         fun paint() {
             val on = prefs.getBoolean(key, def)
             state.text = if (on) "ON" else "OFF"
-            state.typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-            state.textSize = 12f
             state.gravity = Gravity.CENTER
             styleAs(state, if (on) 1 else 0)
         }
@@ -357,9 +376,39 @@ class MainActivity : Activity() {
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            addView(mono(label, 12f, Theme.ink).apply { layoutParams = LinearLayout.LayoutParams(0, wrap, 1f) })
+            addView(tv(label, 12f).apply { layoutParams = LinearLayout.LayoutParams(0, wrap, 1f) })
             addView(state, LinearLayout.LayoutParams(dp(68), dp(38)))
             layoutParams = lp(match, dp(52))
+        }
+    }
+
+    // ---------- easter egg ----------
+
+    private fun scramble(to: String, done: () -> Unit) {
+        val glyphs = "#@\$%&01<>/|"
+        val total = 14
+        var step = 0
+        val r = object : Runnable {
+            override fun run() {
+                val n = to.length * step / total
+                title.text = to.take(n) + to.drop(n).map { if (it == ' ') ' ' else glyphs.random() }.joinToString("")
+                title.setTextColor(if (step == total) Theme.accent else if (step % 2 == 0) Theme.cyan else Theme.red)
+                if (step++ < total) ui.postDelayed(this, 45) else done()
+            }
+        }
+        ui.post(r)
+    }
+
+    private fun egg() {
+        if (eggBusy) return
+        eggBusy = true
+        scramble("BY DIVAKAR ;)") {
+            ui.postDelayed({
+                scramble("POCKETPAD") {
+                    title.setTextColor(Theme.ink)
+                    eggBusy = false
+                }
+            }, 1600)
         }
     }
 
@@ -376,10 +425,10 @@ class MainActivity : Activity() {
     private fun refreshPreset() {
         val p = presets[sel]
         hero.text = p.name
-        heroSub.text = "PRESET  -  ${if (p.playstation) "PS5" else "XBOX"} LOOK"
+        heroSub.text = "${if (p.playstation) "PS5" else "XBOX"} LOOK  //  LS ${"%.1f".format(p.leftGain)}  RS ${"%.1f".format(p.rightGain)}  PAD ${"%.1f".format(p.padSpeed)}"
         chipRow.removeAllViews()
         for ((i, pr) in presets.withIndex()) {
-            val chip = mono(pr.name, 12f, Theme.ink, true).apply {
+            val chip = tv(pr.name, 12f).apply {
                 gravity = Gravity.CENTER
                 isClickable = true
                 setPadding(dp(20), 0, dp(20), 0)
@@ -397,7 +446,7 @@ class MainActivity : Activity() {
             }
             chipRow.addView(chip)
         }
-        chipRow.addView(mono("+ NEW", 12f, Theme.ink, true).apply {
+        chipRow.addView(tv("+ New", 12f).apply {
             gravity = Gravity.CENTER
             isClickable = true
             setPadding(dp(20), 0, dp(20), 0)
@@ -471,21 +520,21 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(24), dp(8), dp(24), dp(4))
         }
-        box.addView(body("Higher means the stick reaches full speed with a smaller thumb movement. Try 2.0 if the camera feels slow.", 13f))
-        fun row(title: String, get: () -> Float, set: (Float) -> Unit) {
-            val label = mono("", 12f, Theme.ink, true).apply { setPadding(0, dp(18), 0, dp(4)) }
+        box.addView(body("Higher means faster with a smaller thumb movement. You can also change these live in a game with TUNE.", 13f))
+        fun row(title: String, get: () -> Float, set: (Float) -> Unit, lo: Float = 1f, steps: Int = 20) {
+            val label = tv("", 12f).apply { setPadding(0, dp(18), 0, dp(4)) }
             fun upd() {
                 label.text = "$title   ${"%.1f".format(get())}X"
             }
             upd()
             val bar = SeekBar(this).apply {
-                max = 20 // 1.0x .. 3.0x
-                progress = ((get() - 1f) * 10f).toInt().coerceIn(0, 20)
+                max = steps
+                progress = Math.round((get() - lo) * 10f).coerceIn(0, steps)
                 progressTintList = ColorStateList.valueOf(Theme.accent)
                 thumbTintList = ColorStateList.valueOf(Theme.accent)
                 setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                     override fun onProgressChanged(s: SeekBar?, v: Int, fromUser: Boolean) {
-                        set(1f + v / 10f)
+                        set(lo + v / 10f)
                         upd()
                     }
 
@@ -498,10 +547,11 @@ class MainActivity : Activity() {
         }
         row("LEFT STICK", { p.leftGain }, { p.leftGain = it })
         row("RIGHT STICK (CAMERA)", { p.rightGain }, { p.rightGain = it })
-        dialog().setTitle("Stick speed - ${p.name}")
+        row("TOUCHPAD", { p.padSpeed }, { p.padSpeed = it }, 0.5f, 35)
+        dialog().setTitle("Sensitivity - ${p.name}")
             .setView(box)
             .setPositiveButton("Done", null)
-            .setOnDismissListener { savePresets() }
+            .setOnDismissListener { savePresets(); refreshPreset() }
             .show()
     }
 
@@ -512,8 +562,6 @@ class MainActivity : Activity() {
         Net.applyMode(this, m == 1)
         styleAs(segWifi, if (m == 0) 1 else 0)
         styleAs(segUsb, if (m == 1) 1 else 0)
-        segWifi.setTextColor(if (m == 0) Theme.bg else Theme.ink)
-        segUsb.setTextColor(if (m == 1) Theme.bg else Theme.ink)
         usbBox.visibility = if (m == 1) View.VISIBLE else View.GONE
         updateUsbStatus()
     }
@@ -522,7 +570,7 @@ class MainActivity : Activity() {
         if (!::usbStatus.isInitialized) return
         val up = Net.usbLinkUp()
         usbStatus.text = if (up) "USB LINK DETECTED" else "USB LINK NOT DETECTED"
-        usbStatus.setTextColor(if (up) Theme.accent else Theme.sub)
+        usbStatus.setTextColor(if (up) Theme.cyan else Theme.sub)
     }
 
     private fun openTetherSettings() {
@@ -540,14 +588,20 @@ class MainActivity : Activity() {
     }
 
     /** state: 0 searching, 1 found, 2 offline */
-    private fun setLink(state: Int, name: String = "") {
-        setDot(pillDot, when (state) { 1 -> 2; 0 -> 1; else -> 0 })
-        setDot(heroDot, if (state == 1) 2 else 0)
+    private fun setLink(state: Int, name: String = "", rtt: Int = -1) {
+        linkState = state
+        setDot(pillDot, when (state) { 1 -> Theme.cyan; 0 -> Theme.accent; else -> Theme.red })
         pillText.text = when (state) {
             1 -> name.uppercase()
             0 -> "SEARCHING"
             else -> "OFFLINE"
         }
+        heroLink.text = when (state) {
+            1 -> "LINKED  //  ${name.uppercase()}" + if (rtt >= 0) "  //  $rtt MS" else ""
+            0 -> "SEARCHING FOR LAPTOP"
+            else -> "NO LAPTOP FOUND"
+        }
+        heroLink.setTextColor(when (state) { 1 -> Theme.cyan; 0 -> Theme.accent; else -> Theme.red })
     }
 
     private fun currentIp(): String = ipField.text.toString().trim()
@@ -565,10 +619,10 @@ class MainActivity : Activity() {
             val found = Net.discover(saved)
             runOnUiThread {
                 if (found != null) {
-                    ipField.setText(found.first)
-                    saveIp(found.first)
-                    setLink(1, found.second)
-                    hint.text = "Connected to ${found.second}."
+                    ipField.setText(found.ip)
+                    saveIp(found.ip)
+                    setLink(1, found.name, found.rtt)
+                    hint.text = "Connected to ${found.name}."
                 } else {
                     setLink(2)
                     hint.text = if (prefs.getInt("mode", 0) == 1)
@@ -599,7 +653,7 @@ class MainActivity : Activity() {
     // ---------- sending files ----------
 
     private fun setShare(msg: String, ok: Boolean) {
-        shareStatus.setTextColor(if (ok) Theme.accent else Theme.ink)
+        shareStatus.setTextColor(if (ok) Theme.accent else Theme.red)
         shareStatus.text = msg
         shareStatus.visibility = if (msg.isEmpty()) View.GONE else View.VISIBLE
     }
@@ -613,9 +667,120 @@ class MainActivity : Activity() {
         startActivityForResult(i, 1)
     }
 
+    // ---------- saving received files ----------
+
+    private fun mime(name: String): String =
+        MimeTypeMap.getSingleton().getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase())
+            ?: "application/octet-stream"
+
+    private fun treeLabel(tree: Uri): String {
+        val id = try { DocumentsContract.getTreeDocumentId(tree) } catch (_: Exception) { "" }
+        val path = id.substringAfter(':', "")
+        return (path.substringAfterLast('/').ifBlank { "Storage" }).uppercase().take(18)
+    }
+
+    private fun refreshSave() {
+        val tree = prefs.getString("tree", null)?.let { Uri.parse(it) }
+        styleAs(saveAsk, if (tree == null) 1 else 0)
+        styleAs(saveFolder, if (tree != null) 1 else 0)
+        saveFolder.text = if (tree != null) "FOLDER: ${treeLabel(tree)}" else "CHOOSE FOLDER"
+    }
+
+    private fun addLog(text: String, ok: Boolean, uri: Uri?) {
+        log.add(0, Entry(text, ok, uri))
+        if (log.size > 5) log.removeAt(log.size - 1)
+        logBox.removeAllViews()
+        for (e in log) {
+            logBox.addView(tv(e.text + if (e.uri != null) "   >" else "", 12f, if (e.ok) Theme.ink else Theme.red).apply {
+                setPadding(0, dp(10), 0, 0)
+                if (e.uri != null) setOnClickListener {
+                    try {
+                        startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(e.uri, mime(e.text)).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
+                    } catch (_: Exception) {
+                        addLog("NO APP TO OPEN THAT FILE", false, null)
+                    }
+                }
+            })
+        }
+    }
+
+    /** Save the next received file: straight into the chosen folder, or ask where each time. */
+    private fun pump() {
+        if (asking || pending.isEmpty() || !resumed) return
+        val p = pending.first()
+        val tree = prefs.getString("tree", null)?.let { Uri.parse(it) }
+        if (tree != null) {
+            pending.removeFirst()
+            thread {
+                try {
+                    val parent = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
+                    val dest = DocumentsContract.createDocument(contentResolver, parent, mime(p.name), p.name)
+                        ?: throw java.io.IOException("could not create file")
+                    copyTo(p, dest)
+                    runOnUiThread { addLog("SAVED ${p.name}  //  ${treeLabel(tree)}", true, dest); pump() }
+                } catch (e: Exception) {
+                    runOnUiThread {
+                        prefs.edit().remove("tree").apply()
+                        refreshSave()
+                        pending.addFirst(p)
+                        addLog("FOLDER UNAVAILABLE, ASKING INSTEAD", false, null)
+                        pump()
+                    }
+                }
+            }
+            return
+        }
+        asking = true
+        startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = mime(p.name)
+            putExtra(Intent.EXTRA_TITLE, p.name)
+        }, 2)
+    }
+
+    private fun copyTo(p: Pending, dest: Uri) {
+        contentResolver.openOutputStream(dest)!!.use { o -> p.tmp.inputStream().use { it.copyTo(o) } }
+        p.tmp.delete()
+    }
+
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 3) {
+            val t = data?.data
+            if (resultCode == RESULT_OK && t != null) {
+                try {
+                    contentResolver.takePersistableUriPermission(t, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                    prefs.edit().putString("tree", t.toString()).apply()
+                } catch (_: Exception) {
+                    addLog("COULD NOT USE THAT FOLDER", false, null)
+                }
+            }
+            refreshSave()
+            return
+        }
+        if (requestCode == 2) {
+            asking = false
+            val p = pending.removeFirstOrNull()
+            val dest = data?.data
+            if (p != null) {
+                if (resultCode == RESULT_OK && dest != null) {
+                    thread {
+                        try {
+                            copyTo(p, dest)
+                            runOnUiThread { addLog("SAVED ${p.name}", true, dest); pump() }
+                        } catch (e: Exception) {
+                            runOnUiThread { addLog("SAVE FAILED: ${e.message}", false, null); pump() }
+                        }
+                    }
+                } else {
+                    p.tmp.delete()
+                    addLog("DISCARDED ${p.name}", false, null)
+                    pump()
+                }
+            }
+            return
+        }
         if (requestCode != 1 || resultCode != RESULT_OK || data == null) return
         val uris = ArrayList<Uri>()
         val clip = data.clipData
@@ -657,7 +822,7 @@ class MainActivity : Activity() {
                     return@thread
                 }
             }
-            runOnUiThread { setShare("Sent $sent file(s). They're in Downloads\\Pocketpad on the laptop.", true) }
+            runOnUiThread { setShare("", true); addLog("SENT $sent FILE(S) TO LAPTOP", true, null) }
         }
     }
 

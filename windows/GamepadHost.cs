@@ -18,6 +18,7 @@ namespace Pocketpad;
 /// Buttons bits: 0 A, 1 B, 2 X, 3 Y, 4 LB, 5 RB, 6 Back, 7 Start,
 ///               8 L3, 9 R3, 10 Up, 11 Down, 12 Left, 13 Right, 14 Guide
 /// Discovery: phone broadcasts "PPAD?", we answer "PPAD!" + computer name.
+/// Mouse (type 2, 6 bytes): [0]=2 [1]=buttons (1 left, 2 right, 4 middle) [2..3] dx int16 [4..5] dy int16.
 /// Ping: phone sends "PPNG" + 8 bytes, we echo the packet back unchanged.
 /// </summary>
 sealed class GamepadHost : IDisposable
@@ -41,6 +42,7 @@ sealed class GamepadHost : IDisposable
     Thread? thread;
     volatile bool running;
     bool wasNeutral = true;
+    int mouseButtons;
 
     public string? DriverError { get; private set; }
     public string? NetworkError { get; private set; }
@@ -67,7 +69,7 @@ sealed class GamepadHost : IDisposable
             udp = new UdpClient(new IPEndPoint(IPAddress.Any, Port));
             udp.EnableBroadcast = true;
             running = true;
-            thread = new Thread(Loop) { IsBackground = true, Name = "pocketpad-udp" };
+            thread = new Thread(Loop) { IsBackground = true, Name = "pocketpad-udp", Priority = ThreadPriority.AboveNormal };
             thread.Start();
         }
         catch (Exception e)
@@ -103,6 +105,11 @@ sealed class GamepadHost : IDisposable
                 LastPacketTick = Environment.TickCount64;
                 Apply(data);
             }
+            else if (data.Length >= 6 && data[0] == 0x02)
+            {
+                LastPacketTick = Environment.TickCount64;
+                ApplyMouse(data);
+            }
             else if (data.Length >= 4 && Encoding.ASCII.GetString(data, 0, 4) == "PPNG")
             {
                 // Latency check from the phone: bounce it straight back.
@@ -114,6 +121,19 @@ sealed class GamepadHost : IDisposable
                 try { udp.Send(reply, reply.Length, ep); } catch { /* ignore */ }
             }
         }
+    }
+
+    void ApplyMouse(byte[] d)
+    {
+        int b = d[1];
+        short dx = BitConverter.ToInt16(d, 2);
+        short dy = BitConverter.ToInt16(d, 4);
+        if (dx != 0 || dy != 0) MouseInjector.Move(dx, dy);
+        int diff = b ^ mouseButtons;
+        if ((diff & 1) != 0) MouseInjector.Button(MouseInjector.Left, (b & 1) != 0);
+        if ((diff & 2) != 0) MouseInjector.Button(MouseInjector.Right, (b & 2) != 0);
+        if ((diff & 4) != 0) MouseInjector.Button(MouseInjector.Middle, (b & 4) != 0);
+        mouseButtons = b;
     }
 
     void Apply(byte[] d)
@@ -148,6 +168,7 @@ sealed class GamepadHost : IDisposable
     public void ReleaseIfStale()
     {
         if (PhoneActive) return;
+        if (mouseButtons != 0) ApplyMouse(new byte[] { 2, 0, 0, 0, 0, 0 });
         lock (padLock)
         {
             if (pad == null || wasNeutral) return;

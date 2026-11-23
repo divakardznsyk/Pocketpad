@@ -25,16 +25,21 @@ Open Pocketpad on both. The phone finds the laptop by itself. If not, type the a
 ## Play
 
 Phone: **Start playing**. Games that support Xbox controllers (RDR2, Elden Ring, ...) see it as one.
-The bar at the top shows the delay in milliseconds; the x leaves the controller.
+The ping stays on screen at the top. **TUNE** changes stick and touchpad speed while the game runs, **EDIT** moves,
+resizes and remaps buttons, and **X** leaves.
+
+**Touchpad:** in EDIT, tap the dashed TOUCHPAD box, drag it where you want and switch PAD ON (or use TUNE).
+Swipe to move the laptop mouse, tap to click, tap with a second finger to right-click.
 
 ## Share files
 
 Drop files on the laptop window (or click it) to send to the phone, or tap **Send to laptop** on the phone.
-Files land in `Downloads\Pocketpad` on the laptop and `Downloads/Pocketpad` on the phone.
+Received files are saved wherever you say: pick **Ask every time** or **Choose folder** under "Save received
+files" in either app. Tap a line in the activity list to open the saved file (phone) or show it in Explorer (laptop).
 
 ## Under the hood
 
-- Controller: 14-byte UDP packets (port 39500) into a virtual Xbox 360 pad via ViGEmBus.
+- Controller: 14-byte UDP packets (port 39500; 6-byte mouse packets use the same port) into a virtual Xbox 360 pad via ViGEmBus.
 - Files: TCP (laptop 39501, phone 39502).
 - `android/` Kotlin, no libraries. `windows/` C# .NET 8. `installer/` Inno Setup script. CI builds all on every push.
 - The APK is signed with the key in `android/app/pocketpad.jks` (committed on purpose so updates install over old builds).

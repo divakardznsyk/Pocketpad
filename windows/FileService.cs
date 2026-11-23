@@ -18,15 +18,12 @@ sealed class FileService : IDisposable
     TcpListener? listener;
     volatile bool running;
 
-    public string ReceiveFolder { get; } =
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "Pocketpad");
-
-    public event Action<string>? FileReceived;
+    /// <summary>Called with a temp file and the original name; the window decides where it is saved.</summary>
+    public event Action<string, string>? FileArrived;
     public event Action<string>? Error;
 
     public void Start()
     {
-        Directory.CreateDirectory(ReceiveFolder);
         try
         {
             listener = new TcpListener(IPAddress.Any, ReceivePort);
@@ -70,7 +67,7 @@ sealed class FileService : IDisposable
                 s.ReadExactly(sizeBuf);
                 long size = BinaryPrimitives.ReadInt64BigEndian(sizeBuf);
 
-                string path = UniquePath(Path.Combine(ReceiveFolder, name));
+                string path = Path.Combine(Path.GetTempPath(), "pocketpad-" + Guid.NewGuid().ToString("N"));
                 using (var f = File.Create(path))
                 {
                     var buf = new byte[256 * 1024];
@@ -78,12 +75,17 @@ sealed class FileService : IDisposable
                     while (left > 0)
                     {
                         int n = s.Read(buf, 0, (int)Math.Min(buf.Length, left));
-                        if (n <= 0) throw new IOException("Connection closed early");
+                        if (n <= 0)
+                        {
+                            f.Dispose();
+                            try { File.Delete(path); } catch { /* ignore */ }
+                            throw new IOException("Connection closed early");
+                        }
                         f.Write(buf, 0, n);
                         left -= n;
                     }
                 }
-                FileReceived?.Invoke(path);
+                FileArrived?.Invoke(path, name);
             }
         }
         catch (Exception e)
@@ -92,7 +94,7 @@ sealed class FileService : IDisposable
         }
     }
 
-    static string UniquePath(string path)
+    public static string UniquePath(string path)
     {
         if (!File.Exists(path)) return path;
         string dir = Path.GetDirectoryName(path)!;

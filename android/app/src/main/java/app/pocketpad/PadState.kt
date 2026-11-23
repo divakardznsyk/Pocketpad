@@ -7,6 +7,7 @@ import java.net.InetAddress
 import java.net.SocketTimeoutException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.locks.LockSupport
 
 /** Button bits, must match windows/GamepadHost.cs */
@@ -36,6 +37,17 @@ class PadState {
     @Volatile var ly = 0
     @Volatile var rx = 0
     @Volatile var ry = 0
+
+    // Touchpad: movement piles up here until the sender drains it; bit 0 left click, bit 1 right click.
+    val mouseDx = AtomicInteger()
+    val mouseDy = AtomicInteger()
+    @Volatile var mouseButtons = 0
+
+    fun addMouse(dx: Int, dy: Int) {
+        mouseDx.addAndGet(dx)
+        mouseDy.addAndGet(dy)
+        changed()
+    }
 
     /** Wakes the sender; set by [PadSender]. */
     @Volatile var listener: Runnable? = null
@@ -69,6 +81,11 @@ class PadSender(private val state: PadState, private val host: InetAddress) : Th
         }
         state.listener = Runnable { LockSupport.unpark(this) }
 
+        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY)
+        val mouse = ByteArray(6)
+        val mouseBb = ByteBuffer.wrap(mouse).order(ByteOrder.LITTLE_ENDIAN)
+        val mousePacket = DatagramPacket(mouse, mouse.size, host, Net.PAD_PORT)
+        var lastMouseButtons = 0
         val cur = ByteArray(14)
         val prev = ByteArray(14)
         val bb = ByteBuffer.wrap(cur).order(ByteOrder.LITTLE_ENDIAN)
@@ -125,6 +142,17 @@ class PadSender(private val state: PadState, private val host: InetAddress) : Th
                 System.arraycopy(cur, 0, prev, 0, cur.size)
                 lastSend = now
             }
+            val mdx = state.mouseDx.getAndSet(0).coerceIn(-32767, 32767)
+            val mdy = state.mouseDy.getAndSet(0).coerceIn(-32767, 32767)
+            val mb = state.mouseButtons
+            if (mdx != 0 || mdy != 0 || mb != lastMouseButtons) {
+                mouseBb.put(0, 2)
+                mouseBb.put(1, mb.toByte())
+                mouseBb.putShort(2, mdx.toShort())
+                mouseBb.putShort(4, mdy.toShort())
+                try { socket.send(mousePacket) } catch (_: IOException) {}
+                lastMouseButtons = mb
+            }
             if (now - lastPing > 2_000_000_000L) {
                 pingBuf.putLong(4, now)
                 try { socket.send(pingPacket) } catch (_: IOException) {}
@@ -139,6 +167,12 @@ class PadSender(private val state: PadState, private val host: InetAddress) : Th
         // Tell the laptop everything is released.
         java.util.Arrays.fill(cur, 2, 14, 0.toByte())
         try { socket.send(packet) } catch (_: IOException) {}
+        if (lastMouseButtons != 0) {
+            mouseBb.put(1, 0)
+            mouseBb.putShort(2, 0)
+            mouseBb.putShort(4, 0)
+            try { socket.send(mousePacket) } catch (_: IOException) {}
+        }
         socket.close()
     }
 

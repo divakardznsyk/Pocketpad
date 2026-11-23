@@ -28,10 +28,21 @@ class GamepadActivity : Activity() {
             // Battery: a dimmed OLED screen is the biggest saver while playing.
             if (prefs.getBoolean("dim", true)) it.screenBrightness = 0.2f
         }
+        // Highest refresh rate at the current resolution (120 Hz on this phone) = smoother, lower touch-to-pixel delay.
+        try {
+            val d = display
+            val cur = d.mode
+            val best = d.supportedModes
+                .filter { it.physicalWidth == cur.physicalWidth && it.physicalHeight == cur.physicalHeight }
+                .maxByOrNull { it.refreshRate }
+            if (best != null) window.attributes = window.attributes.also { it.preferredDisplayModeId = best.modeId }
+        } catch (_: Exception) {
+        }
 
         presets = PresetStore.load(this)
         sel = PresetStore.selected(this, presets.size)
         view = GamepadView(this, state, presets[sel])
+        view.haptics = prefs.getBoolean("hap", true)
         view.onSave = { PresetStore.save(this, presets, sel) }
         view.onClose = {
             PresetStore.save(this, presets, sel)
