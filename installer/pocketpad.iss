@@ -1,7 +1,7 @@
 ; Builds Pocketpad-Setup.exe: installs the app, the virtual-controller driver (ViGEmBus) and a firewall rule.
 [Setup]
 AppName=Pocketpad
-AppVersion=1.0
+AppVersion=1.1
 AppPublisher=Pocketpad
 DefaultDirName={autopf}\Pocketpad
 DisableProgramGroupPage=yes
@@ -40,7 +40,9 @@ Type: filesandordirs; Name: "{app}"
 [Code]
 function NeedsDriver: Boolean;
 begin
-  Result := not RegKeyExists(HKLM, 'SYSTEM\CurrentControlSet\Services\ViGEmBus');
+  // a cleaner can leave the registry entry behind and delete the driver file, so check both
+  Result := not (RegKeyExists(HKLM, 'SYSTEM\CurrentControlSet\Services\ViGEmBus') and
+                 FileExists(ExpandConstant('{sys}\drivers\ViGEmBus.sys')));
 end;
 
 // Close a running copy so the new exe can be written.
