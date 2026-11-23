@@ -187,7 +187,7 @@ sealed class MainForm : Form
             host.ReleaseIfStale();
             if (tickCount++ % 10 == 0) addresses = LocalAddresses();
             link = LinkName(host.PhoneIp);
-            Invalidate();
+            if (Visible) Invalidate(); // nothing to repaint while it's in the tray
         };
         egg.Tick += (_, _) => EggStep();
         Shown += (_, _) =>
@@ -229,6 +229,13 @@ sealed class MainForm : Form
         }
     }
 
+    // Minimise sends it to the tray (still connected); the X closes it for real.
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        if (WindowState == FormWindowState.Minimized) Hide();
+    }
+
     public void ShowMe()
     {
         Show();
@@ -240,19 +247,6 @@ sealed class MainForm : Form
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
-        if (!quitting && e.CloseReason == CloseReason.UserClosing)
-        {
-            // Keep running in the tray so the phone can stay connected while you play.
-            e.Cancel = true;
-            Hide();
-            if (!tipShown)
-            {
-                tipShown = true;
-                tray.ShowBalloonTip(3000, "Pocketpad is still running",
-                    "It stays here so your phone can connect. Right-click the icon to quit.", ToolTipIcon.Info);
-            }
-            return;
-        }
         tick.Stop();
         egg.Stop();
         clipTimer.Stop();
@@ -444,6 +438,8 @@ sealed class MainForm : Form
         Txt(g, "// LAPTOP ADDRESS", fLabel, Cyan, R(44, 590, 300, 16));
         Txt(g, addresses, fMono, Ink, R(44, 610, 352, 24));
         Txt(g, "Type this on your phone if it doesn't connect by itself.", fSmall, Sub, R(44, 638, 352, 16));
+        var ver = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
+        Txt(g, $"BUILD {ver?.Major}.{ver?.Minor}", fLabel, Sub, R(320, 590, 96, 16), StringAlignment.Far);
     }
 
     // ---------- mouse and drag-drop ----------

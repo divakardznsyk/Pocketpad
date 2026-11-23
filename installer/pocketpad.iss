@@ -1,7 +1,7 @@
 ; Builds Pocketpad-Setup.exe: installs the app, the virtual-controller driver (ViGEmBus) and a firewall rule.
 [Setup]
 AppName=Pocketpad
-AppVersion=0.8
+AppVersion=0.9
 AppPublisher=Pocketpad
 DefaultDirName={autopf}\Pocketpad
 DisableProgramGroupPage=yes
@@ -30,7 +30,12 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""P
 Filename: "{app}\Pocketpad.exe"; Description: "Open Pocketpad"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
+Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM Pocketpad.exe"; Flags: runhidden; RunOnceId: "StopApp"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Pocketpad"""; Flags: runhidden; RunOnceId: "RemoveFirewallRule"
+
+[UninstallDelete]
+Type: filesandordirs; Name: "{userappdata}\Pocketpad"
+Type: filesandordirs; Name: "{app}"
 
 [Code]
 function NeedsDriver: Boolean;
@@ -45,4 +50,45 @@ var
 begin
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM Pocketpad.exe', '', SW_HIDE, ewWaitUntilTerminated, code);
   Result := True;
+end;
+
+// Uninstall: offer to remove the controller driver too, so nothing is left behind.
+function DriverUninstallCommand: String;
+var
+  names: TArrayOfString;
+  i: Integer;
+  dn, us: String;
+begin
+  Result := '';
+  if not RegGetSubkeyNames(HKLM, 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall', names) then Exit;
+  for i := 0 to GetArrayLength(names) - 1 do
+  begin
+    if RegQueryStringValue(HKLM, 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\' + names[i], 'DisplayName', dn) and
+       ((Pos('ViGEm', dn) > 0) or (Pos('Virtual Gamepad Emulation', dn) > 0)) and
+       RegQueryStringValue(HKLM, 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\' + names[i], 'UninstallString', us) then
+    begin
+      // shortcut: only the MSI style is handled; anything else is left alone
+      if Pos('msiexec', LowerCase(us)) > 0 then
+      begin
+        StringChangeEx(us, '/I{', '/X{', True);
+        Result := us + ' /qn /norestart';
+      end;
+      Exit;
+    end;
+  end;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  cmd: String;
+  code: Integer;
+begin
+  if (CurUninstallStep = usUninstall) and (not UninstallSilent) then
+  begin
+    cmd := DriverUninstallCommand;
+    if (cmd <> '') and (MsgBox('Also remove the virtual controller driver (ViGEmBus)?' + #13#10 +
+        'Other apps that use virtual controllers need it, so only say Yes if nothing else does.',
+        mbConfirmation, MB_YESNO) = IDYES) then
+      Exec(ExpandConstant('{cmd}'), '/C ' + cmd, '', SW_HIDE, ewWaitUntilTerminated, code);
+  end;
 end;

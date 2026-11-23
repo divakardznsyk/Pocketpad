@@ -2,6 +2,7 @@ package app.pocketpad
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.animation.LayoutTransition
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -251,23 +252,59 @@ class MainActivity : Activity() {
     private fun colView() = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         setPadding(dp(20), dp(16), dp(20), dp(40))
+        // cards below an opening section slide instead of jumping
+        layoutTransition = LayoutTransition().apply {
+            enableTransitionType(LayoutTransition.CHANGING)
+            setDuration(180)
+        }
     }
 
-    /** A card with a tappable heading that shows or hides its content. */
+    private inner class Chevron : View(this@MainActivity) {
+        private val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Theme.sub
+            style = Paint.Style.STROKE
+            strokeWidth = dp(2).toFloat()
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+        }
+        private val path = android.graphics.Path()
+        override fun onDraw(c: Canvas) {
+            path.reset()
+            path.moveTo(width * 0.38f, height * 0.25f)
+            path.lineTo(width * 0.64f, height * 0.5f)
+            path.lineTo(width * 0.38f, height * 0.75f)
+            c.drawPath(path, p)
+        }
+    }
+
+    /** A card with a tappable heading that opens and closes its content smoothly. */
     private fun accordion(title: String, vararg content: View): LinearLayout {
         val inner = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
+            setPadding(0, dp(12), 0, 0)
             for (v in content) addView(v)
         }
-        val head = tv("+   $title", 13f)
-        head.setPadding(0, dp(4), 0, dp(4))
-        head.setOnClickListener {
-            val open = inner.visibility == View.GONE
-            inner.visibility = if (open) View.VISIBLE else View.GONE
-            head.text = (if (open) "-   " else "+   ") + title.uppercase()
+        val chev = Chevron().apply { layoutParams = LinearLayout.LayoutParams(dp(24), dp(24)) }
+        val head = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = dp(32)
+            isClickable = true
+            addView(tv(title, 13f).apply { layoutParams = LinearLayout.LayoutParams(0, wrap, 1f) })
+            addView(chev)
+            setOnClickListener {
+                val open = inner.visibility == View.GONE
+                inner.visibility = if (open) View.VISIBLE else View.GONE
+                chev.animate().rotation(if (open) 90f else 0f).setDuration(180).start()
+            }
         }
-        return card(head, inner)
+        return card(head, inner).apply {
+            layoutTransition = LayoutTransition().apply {
+                enableTransitionType(LayoutTransition.CHANGING)
+                setDuration(180)
+            }
+        }
     }
 
     private fun row(vararg v: View, top: Int = 0) = LinearLayout(this).apply {
@@ -393,6 +430,9 @@ class MainActivity : Activity() {
                 setOnClickListener { showSettings(false) }
             })
         })
+
+        val build = try { packageManager.getPackageInfo(packageName, 0).versionName } catch (_: Exception) { "?" }
+        set.addView(tv("Build $build", 11f, Theme.sub).apply { setPadding(0, dp(4), 0, 0) })
 
         chipRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         set.addView(accordion("Presets",
