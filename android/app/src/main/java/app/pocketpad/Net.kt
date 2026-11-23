@@ -7,7 +7,10 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.Inet4Address
 import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.nio.ByteBuffer
 import java.net.NetworkInterface
 import java.net.SocketTimeoutException
 
@@ -64,57 +67,69 @@ object Net {
         return false
     }
 
-    private fun broadcastAddresses(): List<InetAddress> {
-        val out = LinkedHashSet<InetAddress>()
+    /**
+     * The phone's own address on the same subnet as [peer]. Sockets are bound to it because with mobile data off
+     * (hotspot, no default network) an unbound socket can fail with "network unreachable" even for the laptop next to it.
+     */
+    fun localFor(peer: InetAddress): InetAddress? {
         try {
+            if (peer !is Inet4Address) return null
+            val p = ByteBuffer.wrap(peer.address).int
             val all = NetworkInterface.getNetworkInterfaces()
             while (all != null && all.hasMoreElements()) {
                 val ni = all.nextElement()
                 if (!ni.isUp || ni.isLoopback) continue
                 for (ia in ni.interfaceAddresses) {
-                    ia.broadcast?.let { out.add(it) }
+                    val a = ia.address as? Inet4Address ?: continue
+                    val bits = ia.networkPrefixLength.toInt()
+                    val mask = if (bits == 0) 0 else -1 shl (32 - bits)
+                    if ((ByteBuffer.wrap(a.address).int and mask) == (p and mask)) return a
                 }
             }
         } catch (_: Exception) {
         }
-        return out.toList()
+        return null
     }
 
-    /** Looks for the laptop app. Returns address, computer name and round trip in ms, or null. Blocks up to ~3 seconds. */
+    /** Looks for the laptop app on every network the phone has. Returns address, name and round trip in ms, or null. */
     fun discover(savedIp: String?): Found? {
         val msg = "PPAD?".toByteArray()
-        val s = DatagramSocket()
+        val cands = ArrayList<Pair<InetAddress?, InetAddress?>>() // local address, its broadcast address
         try {
-            s.broadcast = true
-            s.soTimeout = 700
-            repeat(4) {
-                val t0 = System.nanoTime()
-                for (b in broadcastAddresses()) {
-                    try { s.send(DatagramPacket(msg, msg.size, b, PAD_PORT)) } catch (_: Exception) {}
-                }
+            val all = NetworkInterface.getNetworkInterfaces()
+            while (all != null && all.hasMoreElements()) {
+                val ni = all.nextElement()
+                if (!ni.isUp || ni.isLoopback) continue
+                for (ia in ni.interfaceAddresses) if (ia.address is Inet4Address) cands.add(Pair(ia.address, ia.broadcast))
+            }
+        } catch (_: Exception) {
+        }
+        if (cands.isEmpty()) cands.add(Pair(null, null))
+        repeat(2) {
+            for ((local, bc) in cands) {
+                val s = try { DatagramSocket(InetSocketAddress(local, 0)) } catch (_: Exception) { continue }
                 try {
-                    s.send(DatagramPacket(msg, msg.size, InetAddress.getByName("255.255.255.255"), PAD_PORT))
-                } catch (_: Exception) {
-                }
-                if (!savedIp.isNullOrBlank()) {
-                    try {
-                        s.send(DatagramPacket(msg, msg.size, InetAddress.getByName(savedIp), PAD_PORT))
-                    } catch (_: Exception) {
-                    }
-                }
-                val buf = ByteArray(256)
-                val p = DatagramPacket(buf, buf.size)
-                try {
+                    s.broadcast = true
+                    s.soTimeout = 500
+                    val t0 = System.nanoTime()
+                    val targets = ArrayList<InetAddress>()
+                    bc?.let { targets.add(it) }
+                    try { targets.add(InetAddress.getByName("255.255.255.255")) } catch (_: Exception) {}
+                    if (!savedIp.isNullOrBlank()) try { targets.add(InetAddress.getByName(savedIp)) } catch (_: Exception) {}
+                    for (t in targets) try { s.send(DatagramPacket(msg, msg.size, t, PAD_PORT)) } catch (_: Exception) {}
+                    val buf = ByteArray(256)
+                    val p = DatagramPacket(buf, buf.size)
                     s.receive(p)
                     val txt = String(p.data, 0, p.length)
                     if (txt.startsWith("PPAD!")) {
                         return Found(p.address.hostAddress ?: "", txt.substring(5), ((System.nanoTime() - t0) / 1_000_000L).toInt())
                     }
                 } catch (_: SocketTimeoutException) {
+                } catch (_: Exception) {
+                } finally {
+                    s.close()
                 }
             }
-        } finally {
-            s.close()
         }
         return null
     }

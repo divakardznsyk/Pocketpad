@@ -4,6 +4,7 @@ import java.io.IOException
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.SocketTimeoutException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -75,7 +76,7 @@ class PadSender(private val state: PadState, private val host: InetAddress) : Th
 
     override fun run() {
         val socket = try {
-            DatagramSocket().also { it.trafficClass = 0x10 } // low-delay hint
+            DatagramSocket(InetSocketAddress(Net.localFor(host), 0)).also { it.trafficClass = 0x10 } // low-delay hint
         } catch (_: Exception) {
             return
         }

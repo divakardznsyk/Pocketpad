@@ -100,7 +100,7 @@ class MainActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
-        receiver = FileReceiver(
+        if (receiver == null) receiver = FileReceiver(
             this,
             onFile = { tmp, name -> runOnUiThread { pending.add(Pending(tmp, name)); pump() } },
             onEvent = { msg -> runOnUiThread { addLog(msg, false, null) } },
@@ -125,8 +125,9 @@ class MainActivity : Activity() {
         resumed = false
     }
 
-    override fun onStop() {
-        super.onStop()
+    // Not onStop: files from the laptop must still arrive while the controller screen is open.
+    override fun onDestroy() {
+        super.onDestroy()
         receiver?.stop()
         receiver = null
     }
@@ -855,6 +856,7 @@ class MainActivity : Activity() {
         }
         try {
             Socket().use { s ->
+                Net.localFor(java.net.InetAddress.getByName(ip))?.let { s.bind(InetSocketAddress(it, 0)) }
                 s.connect(InetSocketAddress(ip, Net.FILE_PORT), 4000)
                 val out = BufferedOutputStream(s.getOutputStream(), 256 * 1024)
                 val dos = DataOutputStream(out)

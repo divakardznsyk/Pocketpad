@@ -15,9 +15,24 @@ static class Program
     {
         // One copy only: a second one could not open the same network ports anyway.
         using var mutex = new Mutex(true, "Pocketpad.SingleInstance", out bool first);
-        if (!first) return;
+        using var wake = new EventWaitHandle(false, EventResetMode.AutoReset, "Pocketpad.Show");
+        if (!first)
+        {
+            // It's already running (probably hidden in the tray): ask it to come to the front.
+            wake.Set();
+            return;
+        }
         ApplicationConfiguration.Initialize();
-        Application.Run(new MainForm());
+        var form = new MainForm();
+        new Thread(() =>
+        {
+            while (true)
+            {
+                wake.WaitOne();
+                if (form.IsHandleCreated && !form.IsDisposed) form.BeginInvoke(form.ShowMe);
+            }
+        }) { IsBackground = true }.Start();
+        Application.Run(form);
     }
 }
 
@@ -164,10 +179,12 @@ sealed class MainForm : Form
         }
     }
 
-    void ShowMe()
+    public void ShowMe()
     {
         Show();
         WindowState = FormWindowState.Normal;
+        TopMost = true; // brings it in front of other windows; Windows blocks plain Activate() from the background
+        TopMost = false;
         Activate();
     }
 
@@ -531,7 +548,7 @@ sealed class MainForm : Form
             }
             catch (Exception ex)
             {
-                Ui(() => Add("Couldn't send " + name + ". Is the phone app open? (" + ex.Message + ")", false));
+                Ui(() => Add("Couldn't send " + name + ": " + ex.Message + " - keep Pocketpad open on the phone", false));
             }
         });
     }

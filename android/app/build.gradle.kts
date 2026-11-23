@@ -11,8 +11,8 @@ android {
         applicationId = "app.pocketpad"
         minSdk = 30
         targetSdk = 34
-        versionCode = 4
-        versionName = "0.4"
+        versionCode = 5
+        versionName = "0.5"
     }
 
     // Stable key (committed on purpose) so every build installs as an update over the last one.
