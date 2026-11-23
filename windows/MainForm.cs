@@ -621,7 +621,7 @@ sealed class MainForm : Form
         {
             try
             {
-                await files.OfferAsync(path, host.SendToPhone);
+                await files.OfferAsync(path, d => host.SendToPhone(d));
                 Ui(() => Add("Sent " + name, true));
             }
             catch (Exception ex)
