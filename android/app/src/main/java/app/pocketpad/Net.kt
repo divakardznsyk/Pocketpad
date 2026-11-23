@@ -52,6 +52,19 @@ object Net {
         }
     }
 
+    /** True when Bluetooth tethering is on (the phone has a bt-pan interface). */
+    fun btLinkUp(): Boolean {
+        try {
+            val all = NetworkInterface.getNetworkInterfaces()
+            while (all != null && all.hasMoreElements()) {
+                val ni = all.nextElement()
+                if (ni.isUp && ni.name.lowercase().startsWith("bt-pan")) return true
+            }
+        } catch (_: Exception) {
+        }
+        return false
+    }
+
     /** True when the phone is sharing a USB cable connection (USB tethering is on). */
     fun usbLinkUp(): Boolean {
         try {

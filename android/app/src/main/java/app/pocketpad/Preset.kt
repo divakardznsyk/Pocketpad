@@ -67,7 +67,7 @@ class Ctl(val id: String, val kind: Int, val a: Float, val b: Float, val natural
 }
 
 /** Where a control sits (centre as a fraction of screen width/height), how big, and what it sends. */
-class CC(var x: Float, var y: Float, var scale: Float, var action: Int, var visible: Boolean = true)
+class CC(var x: Float, var y: Float, var scale: Float, var action: Int, var visible: Boolean = true, var alpha: Float = 1f)
 
 object Layout {
     val all = listOf(
@@ -158,7 +158,7 @@ class Preset(
 
     fun copyAs(newName: String): Preset {
         val c = HashMap<String, CC>()
-        for ((k, v) in cc) c[k] = CC(v.x, v.y, v.scale, v.action, v.visible)
+        for ((k, v) in cc) c[k] = CC(v.x, v.y, v.scale, v.action, v.visible, v.alpha)
         return Preset(newName, playstation, leftGain, rightGain, padSpeed, c)
     }
 
@@ -171,7 +171,7 @@ class Preset(
         o.put("pg", padSpeed.toDouble())
         val c = JSONObject()
         for ((k, v) in cc) {
-            c.put(k, JSONArray().put(v.x.toDouble()).put(v.y.toDouble()).put(v.scale.toDouble()).put(v.action).put(if (v.visible) 1 else 0))
+            c.put(k, JSONArray().put(v.x.toDouble()).put(v.y.toDouble()).put(v.scale.toDouble()).put(v.action).put(if (v.visible) 1 else 0).put(Math.round(v.alpha * 100)))
         }
         o.put("c", c)
         return o
@@ -196,6 +196,7 @@ class Preset(
                     val act = a.optInt(3, ctl.natural)
                     if (ctl.natural >= 0 && act in 0..15) cfg.action = act
                     if (a.length() > 4) cfg.visible = a.optInt(4, 1) != 0
+                    if (a.length() > 5) cfg.alpha = (a.optInt(5, 100) / 100f).coerceIn(0.2f, 1f)
                 }
             }
             return p

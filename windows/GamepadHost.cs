@@ -54,6 +54,8 @@ sealed class GamepadHost : IDisposable
     /// <summary>Any packet (controller, ping, keep-alive) in the last 6 seconds.</summary>
     public bool PhoneSeen => LastSeenTick != 0 && Environment.TickCount64 - LastSeenTick < 6000;
 
+    public event Action<string>? TextReceived;
+
     public bool SendToPhone(byte[] d)
     {
         var ep = PhoneEp;
@@ -122,6 +124,11 @@ sealed class GamepadHost : IDisposable
             {
                 LastPacketTick = Environment.TickCount64;
                 ApplyMouse(data);
+            }
+            else if (data.Length >= 4 && Encoding.ASCII.GetString(data, 0, 4) == "PPTX")
+            {
+                PhoneEp = new IPEndPoint(ep.Address, ep.Port);
+                TextReceived?.Invoke(Encoding.UTF8.GetString(data, 4, data.Length - 4));
             }
             else if (data.Length >= 4 && Encoding.ASCII.GetString(data, 0, 4) == "PPNG")
             {

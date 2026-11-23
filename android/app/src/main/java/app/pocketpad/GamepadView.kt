@@ -47,7 +47,7 @@ class GamepadView(
         var cy = 0f
         var a = 0f
         var b = 0f
-        val shown get() = ctl.kind != Ctl.PAD || cfg.visible
+        val shown get() = cfg.visible
 
         /** 0 at the centre, 1 at the edge; used to pick the nearest control. */
         fun distance(x: Float, y: Float): Float =
@@ -162,6 +162,8 @@ class GamepadView(
             it.b = ctl.b * h * cfg.scale
             items.add(it)
         }
+        // draw order: touchpad under sticks under buttons
+        items.sortBy { if (it.ctl.kind == Ctl.PAD) 0 else if (it.ctl.kind == Ctl.STICK) 1 else 2 }
     }
 
     private fun releaseAll() {
@@ -232,7 +234,7 @@ class GamepadView(
         var best: Item? = null
         var bestD = 1.15f
         for (it in items) {
-            if (it.ctl.kind == Ctl.STICK || it.ctl.kind == Ctl.PAD) continue
+            if (it.ctl.kind == Ctl.STICK || it.ctl.kind == Ctl.PAD || !it.shown) continue
             val d = it.distance(x, y)
             if (d <= bestD) {
                 bestD = d
@@ -319,7 +321,7 @@ class GamepadView(
             if (downing && thisOne) {
                 var taken = false
                 for (it in items) {
-                    if (it.ctl.kind != Ctl.STICK) continue
+                    if (it.ctl.kind != Ctl.STICK || !it.shown) continue
                     val s = sticks[it.ctl.id] ?: continue
                     if (s.pid == -1 && hypot(x - it.cx, y - it.cy) <= it.a * 1.2f) {
                         s.pid = id
@@ -490,26 +492,35 @@ class GamepadView(
         val sel = selected?.let { id -> items.firstOrNull { it.ctl.id == id } }
         if (sel != null) {
             val y2 = y1 + ch + 0.016f * h
-            val hasAction = sel.ctl.natural >= 0
-            val isPad = sel.ctl.kind == Ctl.PAD
-            val total = (if (hasAction) 0.04f + 0.13f + 0.04f + 0.02f else 0f) + 0.04f + 0.075f + 0.04f + (if (isPad) 0.12f else 0f)
-            var x2 = w * 0.5f - total * w / 2
-            fun add2(id: String, label: String, wFrac: Float, on: Boolean = false) {
-                out.add(Chip(id, label, RectF(x2, y2, x2 + wFrac * w, y2 + ch), on = on))
-                x2 += wFrac * w
+            val kind = sel.ctl.kind
+            // id, label, width as a fraction of the screen; an empty id is a gap
+            val spec = ArrayList<Triple<String, String, Float>>()
+            if (sel.ctl.natural >= 0) {
+                spec.add(Triple("act-", "<", 0.04f))
+                spec.add(Triple("actname", Act.name(sel.cfg.action, preset.playstation), 0.12f))
+                spec.add(Triple("act+", ">", 0.04f))
+                spec.add(Triple("", "", 0.012f))
             }
-            if (hasAction) {
-                add2("act-", "<", 0.04f)
-                add2("actname", Act.name(sel.cfg.action, preset.playstation), 0.13f)
-                add2("act+", ">", 0.04f)
-                x2 += 0.02f * w
+            spec.add(Triple("size-", "-", 0.04f))
+            spec.add(Triple("size", "${(sel.cfg.scale * 100).toInt()}%", 0.07f))
+            spec.add(Triple("size+", "+", 0.04f))
+            spec.add(Triple("", "", 0.012f))
+            spec.add(Triple("op-", "-", 0.04f))
+            spec.add(Triple("op", "OP ${Math.round(sel.cfg.alpha * 100)}%", 0.095f))
+            spec.add(Triple("op+", "+", 0.04f))
+            spec.add(Triple("", "", 0.012f))
+            if (kind == Ctl.STICK || kind == Ctl.PAD) {
+                val g = when (sel.ctl.id) { "LS" -> preset.leftGain; "RS" -> preset.rightGain; else -> preset.padSpeed }
+                spec.add(Triple("sens-", "-", 0.04f))
+                spec.add(Triple("sens", "SENS ${fmt(g)}X", 0.11f))
+                spec.add(Triple("sens+", "+", 0.04f))
+                spec.add(Triple("", "", 0.012f))
             }
-            add2("size-", "-", 0.04f)
-            add2("size", "${(sel.cfg.scale * 100).toInt()}%", 0.075f)
-            add2("size+", "+", 0.04f)
-            if (isPad) {
-                x2 += 0.01f * w
-                add2("padv", if (sel.cfg.visible) "PAD ON" else "PAD OFF", 0.11f, sel.cfg.visible)
+            spec.add(Triple("vis", if (sel.cfg.visible) "SHOWN" else "HIDDEN", 0.1f))
+            var x2 = w * 0.5f - spec.sumOf { it.third.toDouble() }.toFloat() * w / 2
+            for ((id, label, f) in spec) {
+                if (id.isNotEmpty()) out.add(Chip(id, label, RectF(x2, y2, x2 + f * w, y2 + ch), on = id == "vis" && sel.cfg.visible))
+                x2 += f * w
             }
         }
         return out
@@ -538,6 +549,16 @@ class GamepadView(
                 rebuild()
             }
             "padv" -> preset.cc["TP"]?.let { it.visible = !it.visible }
+            "vis" -> if (sel != null) sel.cfg.visible = !sel.cfg.visible
+            "op+", "op-" -> if (sel != null) sel.cfg.alpha = step(sel.cfg.alpha, id == "op+", 0.2f, 1f)
+            "sens+", "sens-" -> if (sel != null) {
+                val up = id == "sens+"
+                when (sel.ctl.id) {
+                    "LS" -> preset.leftGain = step(preset.leftGain, up, 0.5f, 3f)
+                    "RS" -> preset.rightGain = step(preset.rightGain, up, 0.5f, 3f)
+                    else -> preset.padSpeed = step(preset.padSpeed, up, 0.5f, 4f)
+                }
+            }
             "tune" -> {
                 tuneOpen = !tuneOpen
                 if (!tuneOpen) onSave?.invoke()
@@ -624,9 +645,7 @@ class GamepadView(
         val sw = dens * 1.2f
         val ps = preset.playstation
 
-        for (it in items) if (it.ctl.kind == Ctl.PAD && (it.shown || editMode)) drawPad(canvas, it, sw)
-        for (it in items) if (it.ctl.kind == Ctl.STICK) drawStick(canvas, it, sw)
-        for (it in items) if (it.ctl.kind == Ctl.CIRCLE || it.ctl.kind == Ctl.RECT) drawButton(canvas, it, sw, ps)
+        for (it in items) drawItem(canvas, it, sw, ps)
 
         if (editMode) {
             drawSelection(canvas, sw)
@@ -640,6 +659,23 @@ class GamepadView(
             drawChips(canvas, sw)
             drawPing(canvas, sw)
         }
+    }
+
+    /** One control, faded to its own opacity (hidden ones only show, faintly, while editing). */
+    private fun drawItem(canvas: Canvas, it: Item, sw: Float, ps: Boolean) {
+        if (!it.shown && !editMode) return
+        val al = if (!it.shown) 0.3f else it.cfg.alpha
+        val save = if (al < 0.99f) {
+            val hh = if (it.ctl.kind == Ctl.RECT || it.ctl.kind == Ctl.PAD) it.b else it.a
+            val m = dens * 4f
+            canvas.saveLayerAlpha(it.cx - it.a - m, it.cy - hh - m, it.cx + it.a + m, it.cy + hh + m, (al * 255).toInt())
+        } else -1
+        when (it.ctl.kind) {
+            Ctl.PAD -> drawPad(canvas, it, sw)
+            Ctl.STICK -> drawStick(canvas, it, sw)
+            else -> drawButton(canvas, it, sw, ps)
+        }
+        if (save >= 0) canvas.restoreToCount(save)
     }
 
     private fun cut(r: RectF) = minOf(r.width(), r.height()) * 0.28f

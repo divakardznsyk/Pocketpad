@@ -1,7 +1,7 @@
 ; Builds Pocketpad-Setup.exe: installs the app, the virtual-controller driver (ViGEmBus) and a firewall rule.
 [Setup]
 AppName=Pocketpad
-AppVersion=0.6
+AppVersion=0.8
 AppPublisher=Pocketpad
 DefaultDirName={autopf}\Pocketpad
 DisableProgramGroupPage=yes

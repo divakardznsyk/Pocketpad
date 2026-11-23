@@ -92,6 +92,55 @@ sealed class MainForm : Form
     RectangleF LogLine(int i) => R(44, 494 + i * 22, 352, 20);
     bool PhoneKnown => host.PhoneIp != null;
 
+    // ---------- clipboard: a text box that mirrors the one on the phone ----------
+
+    TextBox clipBox = null!;
+    readonly System.Windows.Forms.Timer clipTimer = new() { Interval = 150 };
+    bool applyingClip;
+    RectangleF CopyChip => R(476, 556, 112, 28);
+    RectangleF PasteChip => R(600, 556, 112, 28);
+    RectangleF ClearChip => R(724, 556, 112, 28);
+
+    static string Lf(string s) => s.Replace("\r\n", "\n");
+
+    void BuildClipboard()
+    {
+        clipBox = new TextBox
+        {
+            Multiline = true,
+            AcceptsReturn = true,
+            AcceptsTab = false,
+            ScrollBars = ScrollBars.Vertical,
+            BorderStyle = BorderStyle.None,
+            BackColor = Color.Black,
+            ForeColor = Ink,
+            Font = new Font("Consolas", 11f),
+            MaxLength = 15000,
+            Bounds = Rectangle.Round(R(484, 120, 344, 414)),
+        };
+        Controls.Add(clipBox);
+        clipBox.TextChanged += (_, _) =>
+        {
+            if (applyingClip) return;
+            clipTimer.Stop();
+            clipTimer.Start();
+        };
+        clipTimer.Tick += (_, _) =>
+        {
+            clipTimer.Stop();
+            host.SendToPhone(System.Text.Encoding.UTF8.GetBytes("PPTX" + Lf(clipBox.Text)));
+        };
+        host.TextReceived += t => Ui(() =>
+        {
+            string crlf = t.Replace("\r\n", "\n").Replace("\n", "\r\n");
+            if (clipBox.Text == crlf) return;
+            applyingClip = true;
+            clipBox.Text = crlf;
+            clipBox.SelectionStart = clipBox.TextLength;
+            applyingClip = false;
+        });
+    }
+
     [DllImport("dwmapi.dll")]
     static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
 
@@ -104,7 +153,8 @@ sealed class MainForm : Form
         BackColor = Bg;
         AllowDrop = true;
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer, true);
-        ClientSize = new Size((int)(440 * S), (int)(698 * S));
+        ClientSize = new Size((int)(880 * S), (int)(698 * S));
+        BuildClipboard();
 
         try { if (File.Exists(SettingsFile)) saveFolder = File.ReadAllText(SettingsFile).Trim(); } catch { /* ignore */ }
         if (string.IsNullOrWhiteSpace(saveFolder) || !Directory.Exists(saveFolder)) saveFolder = null;
@@ -205,6 +255,7 @@ sealed class MainForm : Form
         }
         tick.Stop();
         egg.Stop();
+        clipTimer.Stop();
         tray.Visible = false;
         tray.Dispose();
         host.Dispose();
@@ -376,6 +427,18 @@ sealed class MainForm : Form
             }
         }
 
+        // clipboard
+        Panel(g, R(456, 70, 400, 604), 14, Surface, Line, tick: true);
+        Txt(g, "// CLIPBOARD", fLabel, Cyan, R(476, 84, 300, 16));
+        Panel(g, R(476, 112, 360, 430), 10, Color.Black, Outline);
+        foreach (var (chip, label) in new[] { (CopyChip, "COPY"), (PasteChip, "PASTE"), (ClearChip, "CLEAR") })
+        {
+            Panel(g, chip, 8, Surface, Outline);
+            Txt(g, label, fLabel, Ink, chip, StringAlignment.Center, StringAlignment.Center);
+        }
+        Txt(g, "Type or paste here and it appears on your phone live. Whatever you type on the phone shows up here.",
+            fSmall, Sub, R(476, 596, 360, 60));
+
         // address
         Panel(g, R(24, 578, 392, 96), 14, Surface, Line);
         Txt(g, "// LAPTOP ADDRESS", fLabel, Cyan, R(44, 590, 300, 16));
@@ -389,7 +452,8 @@ sealed class MainForm : Form
     {
         base.OnMouseMove(e);
         bool z = Zone.Contains(e.Location) && PhoneKnown;
-        bool c = AskChip.Contains(e.Location) || FolderChip.Contains(e.Location);
+        bool c = AskChip.Contains(e.Location) || FolderChip.Contains(e.Location)
+            || CopyChip.Contains(e.Location) || PasteChip.Contains(e.Location) || ClearChip.Contains(e.Location);
         bool t = TitleRect.Contains(e.Location);
         bool l = LogHit(e.Location) >= 0;
         if (z != hoverZone || c != hoverChip || t != hoverTitle || l != hoverLog)
@@ -423,7 +487,10 @@ sealed class MainForm : Form
         base.OnMouseClick(e);
         if (e.Button != MouseButtons.Left) return;
         int li = LogHit(e.Location);
-        if (TitleRect.Contains(e.Location)) StartEgg();
+        if (CopyChip.Contains(e.Location)) { if (clipBox.TextLength > 0) Clipboard.SetText(clipBox.Text); }
+        else if (PasteChip.Contains(e.Location)) { if (Clipboard.ContainsText()) clipBox.Text = Clipboard.GetText(); }
+        else if (ClearChip.Contains(e.Location)) clipBox.Text = "";
+        else if (TitleRect.Contains(e.Location)) StartEgg();
         else if (AskChip.Contains(e.Location)) SetFolder(null);
         else if (FolderChip.Contains(e.Location))
         {
@@ -598,6 +665,7 @@ sealed class MainForm : Form
                     if (!SameSubnet(ua.Address, phone, ua.IPv4Mask)) continue;
                     string d = (ni.Description + " " + ni.Name).ToLowerInvariant();
                     if (d.Contains("rndis") || d.Contains("remote ndis") || d.Contains("usb")) return "USB CABLE";
+                    if (d.Contains("bluetooth")) return "BLUETOOTH";
                     if (ni.NetworkInterfaceType == NetworkInterfaceType.Wireless80211) return "WI-FI";
                     return "NETWORK";
                 }

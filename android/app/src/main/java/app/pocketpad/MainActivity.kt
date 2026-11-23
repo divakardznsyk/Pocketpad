@@ -2,10 +2,14 @@ package app.pocketpad
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
@@ -18,7 +22,10 @@ import android.os.Looper
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.provider.Settings
+import android.text.Editable
+import android.text.InputFilter
 import android.text.InputType
+import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -29,6 +36,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
+import android.widget.Toast
 import java.io.BufferedOutputStream
 import java.io.DataOutputStream
 import java.io.File
@@ -42,6 +50,13 @@ class MainActivity : Activity() {
     private var sel = 0
 
     private lateinit var title: TextView
+    private lateinit var homeScroll: ScrollView
+    private lateinit var settingsScroll: ScrollView
+    private lateinit var clip: EditText
+    private lateinit var modeHelp: TextView
+    private lateinit var segBt: TextView
+    private var applyingClip = false
+    private val clipSend = Runnable { receiver?.sendText(clip.text.toString()) }
     private lateinit var hero: TextView
     private lateinit var heroSub: TextView
     private lateinit var heroLink: TextView
@@ -82,7 +97,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         presets = PresetStore.load(this)
         sel = PresetStore.selected(this, presets.size)
-        Net.applyMode(this, prefs.getInt("mode", 0) == 1)
+        Net.applyMode(this, prefs.getInt("mode", 0) >= 1)
         buildUi()
         ipField.setText(prefs.getString("ip", ""))
         refreshPreset()
@@ -104,7 +119,17 @@ class MainActivity : Activity() {
             this,
             ipProvider = { prefs.getString("ip", "") ?: "" },
             onFile = { tmp, name -> runOnUiThread { pending.add(Pending(tmp, name)); pump() } },
-            onEvent = { msg -> runOnUiThread { addLog(msg, false, null) } },
+            onText = { t ->
+                runOnUiThread {
+                    if (::clip.isInitialized && clip.text.toString() != t) {
+                        applyingClip = true
+                        clip.setText(t)
+                        clip.setSelection(clip.text.length)
+                        applyingClip = false
+                    }
+                }
+            },
+            onEvent = { msg -> runOnUiThread { addLog(msg, msg.startsWith("RECEIVING"), null) } },
         ).also { it.start() }
     }
 
@@ -205,13 +230,60 @@ class MainActivity : Activity() {
 
     // ---------- screen ----------
 
-    private fun buildUi() {
-        val col = LinearLayout(this).apply {
+    private inner class Sliders : View(this@MainActivity) {
+        private val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Theme.ink; strokeWidth = dp(2).toFloat() }
+        override fun onDraw(c: Canvas) {
+            for (i in 0..2) {
+                val y = height * (0.3f + 0.2f * i)
+                c.drawLine(width * 0.28f, y, width * 0.72f, y, p)
+                c.drawCircle(width * (0.4f + 0.1f * ((i * 2) % 3)), y, dp(3).toFloat(), p)
+            }
+        }
+    }
+
+    private fun scroll(col: View) = ScrollView(this).apply {
+        setBackgroundColor(Theme.bg)
+        isFillViewport = true
+        fitsSystemWindows = true
+        addView(col)
+    }
+
+    private fun colView() = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(20), dp(16), dp(20), dp(40))
+    }
+
+    /** A card with a tappable heading that shows or hides its content. */
+    private fun accordion(title: String, vararg content: View): LinearLayout {
+        val inner = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(16), dp(20), dp(40))
+            visibility = View.GONE
+            for (v in content) addView(v)
+        }
+        val head = tv("+   $title", 13f)
+        head.setPadding(0, dp(4), 0, dp(4))
+        head.setOnClickListener {
+            val open = inner.visibility == View.GONE
+            inner.visibility = if (open) View.VISIBLE else View.GONE
+            head.text = (if (open) "-   " else "+   ") + title.uppercase()
+        }
+        return card(head, inner)
+    }
+
+    private fun row(vararg v: View, top: Int = 0) = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        layoutParams = lp(match, wrap, top)
+        for (x in v) addView(x)
+    }
+
+    private fun half(label: String, kind: Int, h: Int, first: Boolean, onClick: () -> Unit) =
+        btn(label, kind, h, 0, onClick).apply {
+            layoutParams = lp(0, dp(h), 0, 1f).apply { if (first) marginEnd = dp(6) else marginStart = dp(6) }
         }
 
-        // top bar: name (tap it) + link pill
+    private fun buildUi() {
+        // ----- home: play, send files, clipboard -----
+        val home = colView()
         title = tv("Pocketpad", 24f, Theme.ink).apply {
             letterSpacing = 0.2f
             layoutParams = LinearLayout.LayoutParams(0, wrap, 1f)
@@ -229,45 +301,110 @@ class MainActivity : Activity() {
             addView(pillDot)
             addView(pillText)
         }
-        col.addView(LinearLayout(this).apply {
+        val gear = Sliders().apply {
+            background = ripple(cham(Theme.surface, Theme.outline, 8), 8)
+            isClickable = true
+            setOnClickListener { showSettings(true) }
+            layoutParams = LinearLayout.LayoutParams(dp(40), dp(36)).apply { marginStart = dp(8) }
+        }
+        home.addView(LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             addView(title)
             addView(linkPill)
+            addView(gear)
         })
 
-        // hero: the active preset
-        hero = tv("", 44f, Theme.ink).apply { letterSpacing = 0.04f; setPadding(0, dp(4), 0, 0) }
+        hero = tv("", 36f, Theme.ink).apply { letterSpacing = 0.04f; setPadding(0, dp(2), 0, 0) }
         heroSub = tv("", 12f, Theme.sub)
         heroLink = tv("", 12f, Theme.sub).apply { setPadding(0, dp(6), 0, 0) }
-        val actions = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutParams = lp(match, wrap, 8)
-            addView(btn("Customise", 0, 48, 0) { customise() }.apply {
-                layoutParams = lp(0, dp(48), 0, 1f).apply { marginEnd = dp(6) }
-            })
-            addView(btn("Sensitivity", 0, 48, 0) { sensitivityDialog() }.apply {
-                layoutParams = lp(0, dp(48), 0, 1f).apply { marginStart = dp(6) }
-            })
-        }
-        col.addView(card(
-            tv("// Active preset", 11f, Theme.cyan), hero, heroSub, heroLink,
-            btn("Start playing", 1, 56, 18) { openController() }, actions,
+        home.addView(card(
+            tv("// Play", 11f, Theme.cyan), hero, heroSub, heroLink,
+            btn("Start playing", 1, 56, 16) { openController() },
+            row(half("Change preset", 0, 44, true) { pickPreset() }, half("Customise", 0, 44, false) { customise() }, top = 10),
         ))
 
-        // presets
-        col.addView(section("Presets").apply { setPadding(0, dp(28), 0, dp(10)) })
-        chipRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        col.addView(HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            addView(chipRow)
-        })
-        col.addView(body("One preset per game: layout, button changes, stick and touchpad speed. Hold a preset for more options.", 13f)
-            .apply { setPadding(0, dp(10), 0, 0) })
-
-        // files
         shareStatus = tv("", 12f, Theme.accent).apply { visibility = View.GONE; setPadding(0, dp(12), 0, 0) }
         logBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        home.addView(card(
+            tv("// Files", 11f, Theme.cyan),
+            btn("Send to laptop", 0, 52, 10) { pickFiles() },
+            shareStatus, logBox,
+        ))
+
+        clip = EditText(this).apply {
+            hint = "Type or paste here. It shows up on the laptop live, and the other way round."
+            setHintTextColor(Color.rgb(90, 88, 74))
+            setTextColor(Theme.ink)
+            textSize = 15f
+            typeface = Typeface.MONOSPACE
+            minLines = 4
+            maxLines = 8
+            gravity = Gravity.TOP
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            filters = arrayOf(InputFilter.LengthFilter(15000))
+            background = cham(Color.BLACK, Theme.outline, 10)
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            layoutParams = lp(match, wrap, 10)
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                override fun afterTextChanged(s: Editable?) {
+                    if (applyingClip) return
+                    ui.removeCallbacks(clipSend)
+                    ui.postDelayed(clipSend, 150)
+                }
+            })
+        }
+        fun third(label: String, onClick: () -> Unit) = btn(label, 0, 44, 0, onClick).apply {
+            layoutParams = lp(0, dp(44), 0, 1f).apply { marginStart = dp(4); marginEnd = dp(4) }
+        }
+        home.addView(card(
+            tv("// Clipboard", 11f, Theme.cyan), clip,
+            row(
+                third("Copy") {
+                    val cm = getSystemService(ClipboardManager::class.java)
+                    cm.setPrimaryClip(ClipData.newPlainText("pocketpad", clip.text.toString()))
+                    Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show()
+                },
+                third("Paste") {
+                    val t = getSystemService(ClipboardManager::class.java).primaryClip?.getItemAt(0)?.coerceToText(this)
+                    if (!t.isNullOrEmpty()) clip.setText(t)
+                },
+                third("Clear") { clip.setText("") },
+                top = 10,
+            ),
+        ))
+
+        // ----- settings: everything else, folded away -----
+        val set = colView()
+        set.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(tv("Settings", 24f, Theme.ink).apply {
+                letterSpacing = 0.2f
+                layoutParams = LinearLayout.LayoutParams(0, wrap, 1f)
+            })
+            addView(tv("Back", 12f).apply {
+                gravity = Gravity.CENTER
+                isClickable = true
+                background = ripple(cham(Theme.surface, Theme.outline, 8), 8)
+                setPadding(dp(18), dp(10), dp(18), dp(10))
+                setOnClickListener { showSettings(false) }
+            })
+        })
+
+        chipRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        set.addView(accordion("Presets",
+            HorizontalScrollView(this).apply {
+                isHorizontalScrollBarEnabled = false
+                addView(chipRow)
+            },
+            body("One preset per game: layout, button changes, opacity, stick and touchpad speed. Hold a preset for more options.", 13f)
+                .apply { setPadding(0, dp(10), 0, 0) },
+            btn("Sensitivity", 0, 48, 12) { sensitivityDialog() },
+        ))
+
         saveAsk = tv("Ask every time", 12f).apply {
             gravity = Gravity.CENTER
             isClickable = true
@@ -280,33 +417,26 @@ class MainActivity : Activity() {
             setOnClickListener { startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), 3) }
             layoutParams = lp(0, dp(44), 0, 1f).apply { marginStart = dp(6) }
         }
-        col.addView(card(
-            section("Files"),
-            body("Send anything to the laptop, or use the drop zone in the laptop app. Keep this screen open to receive.", 14f),
-            btn("Send to laptop", 0) { pickFiles() },
-            tv("Save received files", 11f, Theme.sub).apply { setPadding(0, dp(18), 0, dp(8)) },
-            LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; addView(saveAsk); addView(saveFolder) },
-            shareStatus, logBox,
-        ))
+        set.addView(accordion("Save received files", row(saveAsk, saveFolder)))
 
-        // connection
-        segWifi = tv("Wi-Fi / hotspot", 12f).apply {
+        fun seg(label: String, m: Int, first: Boolean = false, last: Boolean = false) = tv(label, 12f).apply {
             gravity = Gravity.CENTER
             isClickable = true
-            setOnClickListener { setMode(0) }
-            layoutParams = lp(0, dp(44), 0, 1f).apply { marginEnd = dp(6) }
+            setOnClickListener { setMode(m) }
+            layoutParams = lp(0, dp(44), 0, 1f).apply {
+                if (!first) marginStart = dp(4)
+                if (!last) marginEnd = dp(4)
+            }
         }
-        segUsb = tv("USB cable", 12f).apply {
-            gravity = Gravity.CENTER
-            isClickable = true
-            setOnClickListener { setMode(1) }
-            layoutParams = lp(0, dp(44), 0, 1f).apply { marginStart = dp(6) }
-        }
+        segWifi = seg("Wi-Fi", 0, first = true)
+        segUsb = seg("USB", 1)
+        segBt = seg("Bluetooth", 2, last = true)
         usbStatus = tv("", 12f, Theme.sub).apply { setPadding(0, dp(12), 0, 0) }
+        modeHelp = body("", 14f, Theme.ink)
         usbBox = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(16), 0, 0)
-            addView(body("1.  Plug the phone into the laptop.\n2.  Turn on USB tethering.\n3.  Tap Find below.", 14f, Theme.ink))
+            addView(modeHelp)
             addView(btn("Open tethering settings", 0, 44) { openTetherSettings() })
             addView(usbStatus)
         }
@@ -330,35 +460,48 @@ class MainActivity : Activity() {
             layoutParams = LinearLayout.LayoutParams(dp(84), dp(48)).apply { marginStart = dp(10) }
         }
         hint = body("", 13f).apply { setPadding(0, dp(12), 0, 0) }
-        col.addView(card(
-            section("Connection"),
-            LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; addView(segWifi); addView(segUsb) },
+        set.addView(accordion("Connection",
+            row(segWifi, segUsb, segBt),
             usbBox,
-            LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                layoutParams = lp(match, wrap, 16)
-                addView(ipField)
-                addView(find)
-            },
+            row(ipField, find, top = 16),
             hint,
         ))
 
-        // performance
-        col.addView(card(
-            section("Performance"),
+        set.addView(accordion("Performance",
             toggleRow("Dim screen while playing", "dim", true),
             toggleRow("Low-latency Wi-Fi", "ll", true),
             toggleRow("Haptics", "hap", true),
-            body("The USB cable also charges the phone while you play. Hotspot drains it fastest.", 13f)
+            body("The USB cable also charges the phone while you play. Hotspot and Bluetooth drain it fastest.", 13f)
                 .apply { setPadding(0, dp(12), 0, 0) },
         ))
 
-        setContentView(ScrollView(this).apply {
+        homeScroll = scroll(home)
+        settingsScroll = scroll(set).apply { visibility = View.GONE }
+        setContentView(FrameLayout(this).apply {
             setBackgroundColor(Theme.bg)
-            isFillViewport = true
-            fitsSystemWindows = true
-            addView(col)
+            addView(homeScroll)
+            addView(settingsScroll)
         })
+    }
+
+    private fun showSettings(on: Boolean) {
+        settingsScroll.visibility = if (on) View.VISIBLE else View.GONE
+        homeScroll.visibility = if (on) View.GONE else View.VISIBLE
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (::settingsScroll.isInitialized && settingsScroll.visibility == View.VISIBLE) showSettings(false)
+        else @Suppress("DEPRECATION") super.onBackPressed()
+    }
+
+    private fun pickPreset() {
+        dialog().setTitle("Preset")
+            .setItems(presets.map { it.name }.toTypedArray()) { _, i ->
+                sel = i
+                savePresets()
+                refreshPreset()
+            }.show()
     }
 
     private fun toggleRow(label: String, key: String, def: Boolean): View {
@@ -561,17 +704,21 @@ class MainActivity : Activity() {
 
     private fun setMode(m: Int) {
         prefs.edit().putInt("mode", m).apply()
-        Net.applyMode(this, m == 1)
+        Net.applyMode(this, m >= 1)
         styleAs(segWifi, if (m == 0) 1 else 0)
         styleAs(segUsb, if (m == 1) 1 else 0)
-        usbBox.visibility = if (m == 1) View.VISIBLE else View.GONE
+        styleAs(segBt, if (m == 2) 1 else 0)
+        usbBox.visibility = if (m >= 1) View.VISIBLE else View.GONE
+        modeHelp.text = if (m == 1) "1.  Plug the phone into the laptop.\n2.  Turn on USB tethering.\n3.  Tap Find."
+        else "1.  Pair the phone and laptop in Bluetooth settings.\n2.  On the phone turn on Bluetooth tethering.\n3.  On the laptop: Bluetooth settings, the phone, Connect using, Access point.\n4.  Tap Find. Slower than the cable, so expect more delay."
         updateUsbStatus()
     }
 
     private fun updateUsbStatus() {
         if (!::usbStatus.isInitialized) return
-        val up = Net.usbLinkUp()
-        usbStatus.text = if (up) "USB LINK DETECTED" else "USB LINK NOT DETECTED"
+        val bt = prefs.getInt("mode", 0) == 2
+        val up = if (bt) Net.btLinkUp() else Net.usbLinkUp()
+        usbStatus.text = (if (bt) "BLUETOOTH LINK " else "USB LINK ") + (if (up) "DETECTED" else "NOT DETECTED")
         usbStatus.setTextColor(if (up) Theme.cyan else Theme.sub)
     }
 
@@ -627,8 +774,8 @@ class MainActivity : Activity() {
                     hint.text = "Connected to ${found.name}."
                 } else {
                     setLink(2)
-                    hint.text = if (prefs.getInt("mode", 0) == 1)
-                        "Not found. Check the cable is plugged in, USB tethering is on, and Pocketpad is open on the laptop."
+                    hint.text = if (prefs.getInt("mode", 0) >= 1)
+                        "Not found. Check the cable or Bluetooth link is up, tethering is on, and Pocketpad is open on the laptop."
                     else
                         "Not found. Open Pocketpad on the laptop and join the same Wi-Fi, or turn on this phone's hotspot and connect the laptop to it. You can also type the address shown in the laptop app."
                 }

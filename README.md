@@ -19,6 +19,7 @@ Pick one:
 - Both devices on the same Wi-Fi.
 - Turn on your phone's **hotspot** and connect the laptop to it.
 - USB cable plus **USB tethering** on the phone.
+- **Bluetooth tethering** (slowest; Settings > Connection on the phone shows the steps).
 
 Open Pocketpad on both. The phone finds the laptop by itself. If not, type the address shown in the laptop app.
 
@@ -30,6 +31,10 @@ resizes and remaps buttons, and **X** leaves.
 
 **Touchpad:** in EDIT, tap the dashed TOUCHPAD box, drag it where you want and switch PAD ON (or use TUNE).
 Swipe to move the laptop mouse, tap to click, tap with a second finger to right-click.
+
+## Clipboard
+
+Both apps have a text box that stays in sync live: paste on the laptop, copy it on the phone, or the other way round.
 
 ## Share files
 

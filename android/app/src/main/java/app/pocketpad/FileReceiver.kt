@@ -24,10 +24,32 @@ class FileReceiver(
     private val ctx: Context,
     private val ipProvider: () -> String,
     private val onFile: (File, String) -> Unit,
+    private val onText: (String) -> Unit,
     private val onEvent: (String) -> Unit,
 ) {
     @Volatile
     private var running = false
+
+    @Volatile
+    private var sockRef: DatagramSocket? = null
+    private val sender = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+    /** Live text sync: send the clipboard box to the laptop (UDP, from the keep-alive socket). */
+    fun sendText(t: String) {
+        try {
+            sender.execute {
+                try {
+                    val s = sockRef ?: return@execute
+                    val ip = ipProvider()
+                    if (ip.isBlank()) return@execute
+                    val b = "PPTX".toByteArray() + t.toByteArray(Charsets.UTF_8)
+                    s.send(DatagramPacket(b, b.size, InetAddress.getByName(ip), Net.PAD_PORT))
+                } catch (_: Exception) {
+                }
+            }
+        } catch (_: Exception) {
+        }
+    }
 
     /**
      * The phone always reaches the laptop (phone to laptop works everywhere), so it is the one that opens
@@ -41,6 +63,7 @@ class FileReceiver(
 
     fun stop() {
         running = false
+        sender.shutdown()
     }
 
     private fun keepAlive() {
@@ -60,21 +83,25 @@ class FileReceiver(
                     val addr = try { InetAddress.getByName(ip) } catch (_: Exception) { Thread.sleep(1000); continue }
                     sock = try { DatagramSocket(InetSocketAddress(Net.localFor(addr), 0)) } catch (_: Exception) { Thread.sleep(1000); continue }
                     cur = ip
+                    sockRef = sock
                 }
                 try { sock.send(DatagramPacket(msg, msg.size, InetAddress.getByName(ip), Net.PAD_PORT)) } catch (_: Exception) {}
                 val end = System.currentTimeMillis() + 2000
-                val buf = ByteArray(64)
+                val buf = ByteArray(65536)
                 val p = DatagramPacket(buf, buf.size)
                 while (running) {
                     val left = (end - System.currentTimeMillis()).toInt()
                     if (left <= 0) break
                     try {
+                        p.length = buf.size
                         sock.soTimeout = left
                         sock.receive(p)
                         if (p.length >= 12 && String(buf, 0, 4) == "PPOF") {
                             val token = ByteBuffer.wrap(buf, 4, 8).long
                             val from = p.address
                             if (seen.add(token)) thread { pull(from, token) }
+                        } else if (p.length >= 4 && String(buf, 0, 4) == "PPTX") {
+                            onText(String(buf, 4, p.length - 4, Charsets.UTF_8))
                         }
                     } catch (_: SocketTimeoutException) {
                     } catch (_: IOException) {
@@ -84,6 +111,7 @@ class FileReceiver(
             }
         } catch (_: InterruptedException) {
         } finally {
+            sockRef = null
             sock?.close()
         }
     }
@@ -113,6 +141,7 @@ class FileReceiver(
                 var name = String(nameBytes, Charsets.UTF_8).substringAfterLast('/').substringAfterLast('\\')
                 if (name.isBlank()) name = "file"
                 val size = din.readLong()
+                onEvent("RECEIVING $name")
 
                 // Into a temp file first; the app then saves it where the person chose.
                 val tmp = File.createTempFile("pocketpad", ".tmp", ctx.cacheDir)

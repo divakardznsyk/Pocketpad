@@ -163,16 +163,18 @@ sealed class FileService : IDisposable
         var pkt = new byte[12];
         Encoding.ASCII.GetBytes("PPOF").CopyTo(pkt, 0);
         BinaryPrimitives.WriteInt64BigEndian(pkt.AsSpan(4), token);
-        for (int i = 0; i < 24 && !tcs.Task.IsCompleted; i++)
+        // Keep offering until the phone picks it up (the offer leaves the table); after that, wait as long as the transfer takes.
+        for (int i = 0; i < 24; i++)
         {
             sendUdp(pkt);
             if (await Task.WhenAny(tcs.Task, Task.Delay(500)) == tcs.Task) break;
+            bool pending;
+            lock (offers) pending = offers.ContainsKey(token);
+            if (!pending) break;
         }
-        if (!tcs.Task.IsCompleted)
-        {
-            lock (offers) offers.Remove(token);
-            throw new TimeoutException("the phone didn't answer");
-        }
+        bool neverTaken;
+        lock (offers) neverTaken = offers.Remove(token);
+        if (neverTaken) throw new TimeoutException("the phone didn't answer");
         await tcs.Task;
     }
 
